@@ -1,0 +1,70 @@
+# Vector Store Configuration for Code Indexer
+
+# Default vector store configuration
+vector_store:
+  # The type of vector store to use (milvus, qdrant)
+  type: "milvus"
+  
+  # Default collection for code embeddings
+  default_collection: "code_embeddings"
+  
+  # Embedding dimension (should match the output of the embedding model)
+  embedding_dimension: 1536  # For OpenAI embeddings
+  
+  # Default metadata schema for code chunks
+  metadata_schema:
+    file_path: "string"
+    language: "string"
+    entity_type: "string"  # function, class, method, etc.
+    entity_id: "string"    # Identifier for the code entity
+    start_line: "int"
+    end_line: "int"
+    chunk_id: "string"     # Unique identifier for the chunk
+    indexed_at: "string"   # Timestamp when the chunk was indexed
+    repository: "string"   # Repository identifier
+    branch: "string"       # Git branch
+    commit_id: "string"    # Git commit hash
+
+  # Milvus-specific configuration
+  milvus:
+    # Connection parameters
+    host: "localhost"
+    port: 19530
+    user: ""
+    password: ""
+    secure: false
+    connection_alias: "code_indexer"
+    
+    # Index parameters
+    index_type: "HNSW"  # Options: HNSW, IVF_FLAT, FLAT
+    index_params:
+      M: 16             # HNSW parameter: max number of edges per node
+      efConstruction: 200  # HNSW parameter: size of the dynamic candidate list for building
+    
+    # Search parameters
+    search_ef: 64       # HNSW parameter: size of the dynamic candidate list for searching
+    search_nprobe: 10   # IVF parameter: number of clusters to search
+    
+    # Performance tuning
+    connection_pool_size: 10
+    batch_size: 1000
+    timeout: 60         # seconds
+    
+    # Logging
+    log_level: "INFO"   # Options: DEBUG, INFO, WARNING, ERROR
+  
+  # Qdrant-specific configuration (for future use)
+  qdrant:
+    url: "http://localhost:6333"
+    api_key: ""
+    prefer_grpc: true
+    timeout: 60
+    
+    # Index parameters
+    vector_params:
+      size: 1536
+      distance: "Cosine"  # Options: Cosine, Euclid, Dot
+      
+    # Performance parameters
+    batch_size: 100
+    log_level: "INFO"

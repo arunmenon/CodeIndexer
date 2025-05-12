@@ -1,0 +1,28 @@
+# Core dependencies
+numpy>=1.20.0
+pyyaml>=6.0
+typing-extensions>=4.0.0
+
+# Google ADK - will need to be installed separately
+# google-adk
+
+# Vector databases
+pymilvus>=2.2.0  # Optional: for Milvus vector store
+qdrant-client>=1.1.0  # Optional: for Qdrant vector store
+
+# Graph database
+neo4j>=5.5.0  # For code knowledge graph
+
+# Language parsing
+tree-sitter>=0.20.0  # For multi-language parsing
+
+# Embedding models
+sentence-transformers>=2.2.0  # For generating code embeddings
+
+# Git operations
+gitpython>=3.1.30  # For repository operations
+
+# Utilities
+tqdm>=4.64.0  # Progress bars
+loguru>=0.6.0  # Better logging
+tenacity>=8.1.0  # Retry logic
