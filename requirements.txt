@@ -3,8 +3,8 @@ numpy>=1.20.0
 pyyaml>=6.0
 typing-extensions>=4.0.0
 
-# Google ADK - will need to be installed separately
-# google-adk
+# Google ADK
+google-adk
 
 # Vector databases
 pymilvus>=2.2.0  # Optional: for Milvus vector store
