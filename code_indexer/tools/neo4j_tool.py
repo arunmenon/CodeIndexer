@@ -9,6 +9,7 @@ import logging
 from typing import Dict, List, Any, Optional, Tuple, Union
 
 from google.adk.tooling import BaseTool
+from google.adk.api.tool import ToolContext, ToolResponse, ToolStatus
 
 # Import Neo4j conditionally to handle environments without it
 try:
@@ -37,6 +38,7 @@ class Neo4jTool(BaseTool):
         self.uri = os.environ.get("NEO4J_URI", "bolt://localhost:7687")
         self.user = os.environ.get("NEO4J_USER", "neo4j")
         self.password = os.environ.get("NEO4J_PASSWORD", "password")
+        self.database = os.environ.get("NEO4J_DATABASE", "neo4j")
         
         # Connect to Neo4j
         self.connect()
@@ -58,7 +60,7 @@ class Neo4jTool(BaseTool):
                 auth=basic_auth(self.user, self.password)
             )
             # Test connection
-            with self.driver.session() as session:
+            with self.driver.session(database=self.database) as session:
                 session.run("RETURN 1")
             
             self.logger.info(f"Connected to Neo4j at {self.uri}")
@@ -100,7 +102,7 @@ class Neo4jTool(BaseTool):
         RETURN f.id
         """
         
-        with self.driver.session() as session:
+        with self.driver.session(database=self.database) as session:
             result = session.run(
                 query,
                 file_id=file_id,
@@ -141,7 +143,7 @@ class Neo4jTool(BaseTool):
         RETURN c.id
         """
         
-        with self.driver.session() as session:
+        with self.driver.session(database=self.database) as session:
             result = session.run(
                 query,
                 class_id=class_id,
@@ -192,7 +194,7 @@ class Neo4jTool(BaseTool):
         RETURN f.id
         """
         
-        with self.driver.session() as session:
+        with self.driver.session(database=self.database) as session:
             result = session.run(
                 query,
                 function_id=function_id,
@@ -236,7 +238,7 @@ class Neo4jTool(BaseTool):
             query += f" SET {props_str}"
         
         try:
-            with self.driver.session() as session:
+            with self.driver.session(database=self.database) as session:
                 session.run(
                     query,
                     from_id=from_id,
@@ -268,7 +270,7 @@ class Neo4jTool(BaseTool):
         """
         
         try:
-            with self.driver.session() as session:
+            with self.driver.session(database=self.database) as session:
                 session.run(query, file_id=file_id)
             return True
         except Exception as e:
@@ -294,7 +296,7 @@ class Neo4jTool(BaseTool):
         RETURN f.id
         """
         
-        with self.driver.session() as session:
+        with self.driver.session(database=self.database) as session:
             result = session.run(query, name=name)
             return [record[0] for record in result]
     
@@ -313,12 +315,179 @@ class Neo4jTool(BaseTool):
             self.connect()
         
         try:
-            with self.driver.session() as session:
+            with self.driver.session(database=self.database) as session:
                 result = session.run(query, params or {})
                 return [dict(record) for record in result]
         except Exception as e:
             self.logger.error(f"Error executing Cypher query: {e}")
             raise
+    
+    # ADK Tool methods
+    def execute_query(self, input_data: Dict[str, Any], context: Optional[ToolContext] = None) -> ToolResponse:
+        """
+        Execute a Cypher query through the ADK tool interface.
+        
+        Args:
+            input_data: Dictionary with query and parameters
+            context: Tool context
+            
+        Returns:
+            ToolResponse with query results
+        """
+        query = input_data.get("query", "")
+        params = input_data.get("params", {})
+        database = input_data.get("database", self.database)
+        
+        if not query:
+            return ToolResponse(
+                status=ToolStatus.error("No query provided"),
+                data={"results": []}
+            )
+        
+        try:
+            with self.driver.session(database=database) as session:
+                result = session.run(query, params or {})
+                results = [dict(record) for record in result]
+                
+                return ToolResponse(
+                    status=ToolStatus.success(),
+                    data={"results": results}
+                )
+        except Exception as e:
+            return ToolResponse(
+                status=ToolStatus.error(f"Query execution failed: {str(e)}"),
+                data={"results": []}
+            )
+    
+    def create_module_node(self, module_id: str, name: str, file_id: str = None) -> str:
+        """
+        Create or update a Module node in the graph.
+        
+        Args:
+            module_id: Unique identifier for the module
+            name: Name of the module
+            file_id: ID of the file containing the module (optional)
+            
+        Returns:
+            ID of the created/updated node
+        """
+        if not self.driver:
+            self.connect()
+        
+        query = """
+        MERGE (m:Module {id: $module_id})
+        SET m.name = $name,
+            m.file_id = $file_id,
+            m.last_updated = timestamp()
+        RETURN m.id
+        """
+        
+        with self.driver.session(database=self.database) as session:
+            result = session.run(
+                query,
+                module_id=module_id,
+                name=name,
+                file_id=file_id
+            )
+            return result.single()[0]
+    
+    def create_import_relationship(self, from_file_id: str, to_module: str) -> bool:
+        """
+        Create an IMPORTS relationship between a file and a module.
+        
+        Args:
+            from_file_id: ID of the file doing the importing
+            to_module: Name of the imported module
+            
+        Returns:
+            True if relationship was created, False otherwise
+        """
+        if not self.driver:
+            self.connect()
+        
+        # Create module node if it doesn't exist
+        module_id = to_module.replace(".", "_")
+        self.create_module_node(module_id, to_module)
+        
+        # Create IMPORTS relationship
+        return self.create_relationship(
+            from_id=from_file_id,
+            to_id=module_id,
+            rel_type="IMPORTS"
+        )
+    
+    def get_class_methods(self, class_id: str) -> List[Dict[str, Any]]:
+        """
+        Get all methods of a class.
+        
+        Args:
+            class_id: ID of the class
+            
+        Returns:
+            List of method information
+        """
+        if not self.driver:
+            self.connect()
+        
+        query = """
+        MATCH (c:Class {id: $class_id})-[:CONTAINS]->(m:Function)
+        WHERE m.is_method = true
+        RETURN m.id as id, m.name as name, m.start_line as start_line, 
+               m.end_line as end_line, m.params as params
+        """
+        
+        try:
+            with self.driver.session(database=self.database) as session:
+                result = session.run(query, class_id=class_id)
+                return [dict(record) for record in result]
+        except Exception as e:
+            self.logger.error(f"Error getting class methods: {e}")
+            return []
+    
+    def find_call_relationships(self, function_id: str) -> Dict[str, List[str]]:
+        """
+        Find call relationships for a function.
+        
+        Args:
+            function_id: ID of the function
+            
+        Returns:
+            Dictionary with called_by and calls lists
+        """
+        if not self.driver:
+            self.connect()
+        
+        result = {
+            "called_by": [],
+            "calls": []
+        }
+        
+        # Find functions that call this function
+        query1 = """
+        MATCH (caller:Function)-[:CALLS]->(f:Function {id: $function_id})
+        RETURN caller.id as id, caller.name as name
+        """
+        
+        # Find functions that this function calls
+        query2 = """
+        MATCH (f:Function {id: $function_id})-[:CALLS]->(called:Function)
+        RETURN called.id as id, called.name as name
+        """
+        
+        try:
+            with self.driver.session(database=self.database) as session:
+                # Get called_by relationships
+                called_by = session.run(query1, function_id=function_id)
+                result["called_by"] = [f"{record['name']} ({record['id']})" for record in called_by]
+                
+                # Get calls relationships
+                calls = session.run(query2, function_id=function_id)
+                result["calls"] = [f"{record['name']} ({record['id']})" for record in calls]
+                
+            return result
+        except Exception as e:
+            self.logger.error(f"Error finding call relationships: {e}")
+            return result
     
     def __del__(self):
         """Close connection when object is destroyed."""

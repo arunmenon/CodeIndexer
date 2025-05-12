@@ -1,0 +1,157 @@
+version: '3.8'
+
+services:
+  # Neo4j Graph Database
+  neo4j:
+    container_name: code-indexer-neo4j
+    image: neo4j:5.9
+    environment:
+      NEO4J_AUTH: neo4j/password
+      NEO4J_apoc_export_file_enabled: "true"
+      NEO4J_apoc_import_file_enabled: "true"
+      NEO4J_apoc_import_file_use__neo4j__config: "true"
+      NEO4J_dbms_security_procedures_unrestricted: "apoc.*,algo.*"
+    ports:
+      - "7474:7474"  # HTTP
+      - "7687:7687"  # Bolt
+    volumes:
+      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/neo4j/data:/data
+      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/neo4j/logs:/logs
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://localhost:7474"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  # Milvus Vector Database and its dependencies
+  etcd:
+    container_name: code-indexer-etcd
+    image: quay.io/coreos/etcd:v3.5.0
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    volumes:
+      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/etcd:/etcd
+    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  minio:
+    container_name: code-indexer-minio
+    image: minio/minio:RELEASE.2023-01-25T00-19-54Z
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/minio:/minio_data
+    command: minio server /minio_data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  milvus:
+    container_name: code-indexer-milvus
+    image: milvusdb/milvus:v2.2.11
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    volumes:
+      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/milvus:/var/lib/milvus
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    depends_on:
+      - "etcd"
+      - "minio"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  # Code Indexer API and Services
+  code-indexer:
+    container_name: code-indexer-app
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      - neo4j
+      - milvus
+    environment:
+      # Neo4j configuration
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: password
+      NEO4J_DATABASE: neo4j
+      
+      # Milvus configuration
+      MILVUS_HOST: milvus
+      MILVUS_PORT: 19530
+      VECTOR_STORE: milvus
+      
+      # Embedding model configuration
+      EMBEDDING_MODEL_TYPE: sentence_transformers
+      EMBEDDING_MODEL_NAME: all-MiniLM-L6-v2
+      
+      # Git and indexing configuration
+      WORKSPACE_DIR: /app/workspace
+      MAX_FILE_SIZE: 1048576  # 1MB
+      
+      # API configuration
+      API_PORT: 8000
+      
+      # Log level
+      LOG_LEVEL: INFO
+    ports:
+      - "8000:8000"  # API
+    volumes:
+      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/workspace:/app/workspace
+      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/config:/app/config
+      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/logs:/app/logs
+    restart: unless-stopped
+    command: python -m code_indexer.api.search_api
+
+  # CLI service (optional, can be connected to for interactive use)
+  code-indexer-cli:
+    container_name: code-indexer-cli
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      - neo4j
+      - milvus
+    environment:
+      # Same environment as the main service
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: password
+      NEO4J_DATABASE: neo4j
+      MILVUS_HOST: milvus
+      MILVUS_PORT: 19530
+      VECTOR_STORE: milvus
+      WORKSPACE_DIR: /app/workspace
+      LOG_LEVEL: INFO
+    volumes:
+      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/workspace:/app/workspace
+      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/config:/app/config
+      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/logs:/app/logs
+    # Use command below to run in interactive mode
+    stdin_open: true
+    tty: true
+    command: bash
+
+networks:
+  default:
+    name: code-indexer-network

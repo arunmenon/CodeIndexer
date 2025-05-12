@@ -1,247 +1,346 @@
 """
 AST Extractor Tool
 
-This module provides a unified interface for extracting abstract syntax trees (ASTs)
-from code in different languages using native Python ast module for Python
-and Tree-Sitter for other languages.
+Provides a unified interface for extracting Abstract Syntax Trees (ASTs) from
+code in different programming languages.
 """
 
-import ast
-import json
-import logging
 import os
-import pathlib
-from typing import Dict, List, Optional, Union, Any
-
-# Import tree-sitter conditionally to handle environments without it
-try:
-    from tree_sitter import Language, Parser
-    HAS_TREE_SITTER = True
-except ImportError:
-    HAS_TREE_SITTER = False
-    logging.warning("Tree-sitter not installed. Only Python parsing will be available.")
-
-from google.adk import Tool
-from code_indexer.utils.ast_utils import ast_to_dict
+import ast
+import logging
+import json
+import tempfile
+from typing import Dict, Any, List, Optional, Union, Tuple
+from pathlib import Path
 
 
-class ASTExtractorTool(Tool):
+class ASTExtractorTool:
     """
     Unified AST extraction for multiple languages.
     
     Provides a consistent interface to extract ASTs from code files in different
     languages, returning a standardized JSON-serializable tree structure.
-    
-    Currently supported languages:
-    - Python (using native ast module)
-    - Java (using Tree-Sitter)
-    - JavaScript (using Tree-Sitter)
     """
-
-    def __init__(self):
-        """Initialize the AST extractor tool."""
-        super().__init__()
-        self.logger = logging.getLogger(__name__)
-        self.ts_parsers = {}  # Cache of Tree-Sitter parsers
-        
-        # Grammar paths configuration
-        self.grammar_paths = {
-            "java": os.environ.get("TS_JAVA_GRAMMAR_PATH", "vendor/tree-sitter-java"),
-            "javascript": os.environ.get("TS_JS_GRAMMAR_PATH", "vendor/tree-sitter-javascript"),
-            # Add other supported languages here
-        }
-        
-        # Check if tree-sitter is available for non-Python languages
-        if not HAS_TREE_SITTER:
-            self.logger.warning(
-                "Tree-Sitter not available. Only Python parsing will work. "
-                "Install tree-sitter for multi-language support."
-            )
     
-    def _ts_parser(self, lang: str) -> Optional[Parser]:
+    def __init__(self, config: Dict[str, Any]):
         """
-        Get or create a Tree-Sitter parser for the specified language.
+        Initialize the AST extractor tool.
         
         Args:
-            lang: Language identifier (e.g., "java", "javascript")
-            
-        Returns:
-            A configured Tree-Sitter parser or None if unavailable
+            config: Configuration dictionary
         """
-        if not HAS_TREE_SITTER:
-            return None
-            
-        # Return cached parser if available
-        if lang in self.ts_parsers:
-            return self.ts_parsers[lang]
+        self.config = config
+        self.logger = logging.getLogger("ast_extractor_tool")
         
-        # Check if language grammar path is configured
-        if lang not in self.grammar_paths:
-            self.logger.error(f"Language {lang} not supported. No grammar path configured.")
-            return None
+        # Language parsers
+        self.python_parser = PythonParser()
+        self.tree_sitter_parser = None
         
-        try:
-            # Build language library
-            grammar_path = self.grammar_paths[lang]
-            so_path = f"/tmp/tree-sitter-{lang}.so"
-            
-            Language.build_library(so_path, [grammar_path])
-            
-            # Create and configure parser
-            parser = Parser()
-            parser.set_language(Language(so_path, lang))
-            
-            # Cache parser for future use
-            self.ts_parsers[lang] = parser
-            return parser
-        except Exception as e:
-            self.logger.error(f"Error creating Tree-Sitter parser for {lang}: {e}")
-            return None
+        # Load Tree-sitter if available and configured
+        if config.get("use_tree_sitter", True):
+            try:
+                from .parsers.tree_sitter_parser import TreeSitterParser
+                self.tree_sitter_parser = TreeSitterParser(config.get("tree_sitter_config", {}))
+                self.logger.info("Tree-sitter parser initialized")
+            except ImportError:
+                self.logger.warning("Tree-sitter not available, falling back to built-in parsers")
+        
+        # Language detection settings
+        self.language_extensions = config.get("language_extensions", {
+            ".py": "python",
+            ".js": "javascript",
+            ".ts": "typescript",
+            ".jsx": "javascript",
+            ".tsx": "typescript",
+            ".java": "java",
+            ".go": "go",
+            ".rb": "ruby",
+            ".php": "php",
+            ".cs": "c_sharp",
+            ".cpp": "cpp",
+            ".cc": "cpp",
+            ".c": "c",
+            ".h": "c",
+            ".hpp": "cpp",
+            ".rs": "rust"
+        })
+        
+        # Fall back to Python parser for unsupported languages
+        self.fallback_to_text = config.get("fallback_to_text", True)
     
-    def extract(self, path: str, lang: str) -> Dict[str, Any]:
+    def extract_ast(self, code: str, language: Optional[str] = None, 
+                  file_path: Optional[str] = None) -> Dict[str, Any]:
         """
-        Extract AST from a source file.
+        Extract AST from code.
         
         Args:
-            path: Path to the source file
-            lang: Language identifier (e.g., "python", "java")
+            code: Source code
+            language: Programming language (optional, will be detected if not provided)
+            file_path: Path to the source file (optional, used for language detection)
             
         Returns:
-            A dictionary representing the AST of the source file
-        
-        Raises:
-            ValueError: If the file doesn't exist or can't be parsed
+            Dictionary containing the AST in a standardized format
         """
-        if not os.path.exists(path):
-            raise ValueError(f"File not found: {path}")
+        # Detect language if not provided
+        if not language and file_path:
+            language = self._detect_language(file_path)
         
-        try:
-            with open(path, "r", encoding="utf-8") as file:
-                code = file.read()
-                
-            # Handle Python using native ast module
-            if lang.lower() == "python":
-                py_ast = ast.parse(code)
-                return ast_to_dict(py_ast, code)
-            
-            # Handle other languages with Tree-Sitter
-            parser = self._ts_parser(lang.lower())
-            if not parser:
-                raise ValueError(f"No parser available for language: {lang}")
-            
-            # Parse code with Tree-Sitter
-            tree = parser.parse(bytes(code, "utf8"))
-            
-            # Convert Tree-Sitter AST to our standard format
-            return self._ts_tree_to_dict(tree.root_node, code)
+        # If still no language, try to detect from code
+        if not language:
+            language = self._detect_language_from_code(code)
+            self.logger.info(f"Detected language from code: {language}")
         
-        except Exception as e:
-            self.logger.error(f"Error extracting AST from {path}: {e}")
-            raise ValueError(f"Failed to parse {path}: {str(e)}")
-    
-    def _ts_tree_to_dict(self, node, source_code: str) -> Dict[str, Any]:
-        """
-        Convert a Tree-Sitter AST to a standardized dictionary format.
-        
-        Args:
-            node: Tree-Sitter AST node
-            source_code: Original source code text
-            
-        Returns:
-            Dictionary representation of the AST
-        """
-        # Extract node text
-        start_byte = node.start_byte
-        end_byte = node.end_byte
-        text = source_code[start_byte:end_byte]
-        
-        # Build node representation
-        result = {
-            "type": node.type,
-            "text": text,
-            "start_position": {
-                "row": node.start_point[0],
-                "column": node.start_point[1]
-            },
-            "end_position": {
-                "row": node.end_point[0],
-                "column": node.end_point[1]
-            }
-        }
-        
-        # Add children if any
-        if node.child_count > 0:
-            result["children"] = [
-                self._ts_tree_to_dict(child, source_code)
-                for child in node.children
-            ]
-        
-        return result
-    
-    def find_calls(self, ast_dict: Dict[str, Any], lang: str) -> List[str]:
-        """
-        Extract function/method calls from an AST.
-        
-        Args:
-            ast_dict: AST dictionary returned by extract()
-            lang: Language identifier (e.g., "python", "java")
-            
-        Returns:
-            List of fully-qualified names being called in the code
-        """
-        calls = []
-        
-        if lang.lower() == "python":
-            calls = self._find_python_calls(ast_dict)
+        # Extract AST based on language
+        if language == "python":
+            ast_dict = self.python_parser.parse(code)
+        elif self.tree_sitter_parser and language in self.tree_sitter_parser.supported_languages():
+            ast_dict = self.tree_sitter_parser.parse(code, language)
         else:
-            calls = self._find_ts_calls(ast_dict, lang.lower())
+            self.logger.warning(f"Unsupported language: {language}")
+            if self.fallback_to_text:
+                # Fall back to text representation
+                ast_dict = self._create_text_representation(code, language)
+            else:
+                ast_dict = {"error": f"Unsupported language: {language}"}
+        
+        # Add metadata
+        ast_dict["language"] = language
+        if file_path:
+            ast_dict["file_path"] = file_path
+        
+        return ast_dict
+    
+    def extract_ast_from_file(self, file_path: str, language: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Extract AST from a file.
+        
+        Args:
+            file_path: Path to the source file
+            language: Programming language (optional, will be detected if not provided)
             
-        return calls
+        Returns:
+            Dictionary containing the AST in a standardized format
+        """
+        try:
+            # Read file content
+            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                code = f.read()
+            
+            # Detect language if not provided
+            if not language:
+                language = self._detect_language(file_path)
+            
+            # Extract AST
+            return self.extract_ast(code, language, file_path)
+            
+        except Exception as e:
+            self.logger.error(f"Failed to extract AST from file {file_path}: {e}")
+            return {
+                "error": str(e),
+                "file_path": file_path,
+                "language": language or "unknown"
+            }
     
-    def _find_python_calls(self, ast_dict: Dict[str, Any]) -> List[str]:
-        """Find calls in Python AST."""
-        calls = []
+    def _detect_language(self, file_path: str) -> str:
+        """
+        Detect programming language from file path.
         
-        # Process node based on type
-        if ast_dict["type"] == "Call":
-            # Extract function name for direct calls
-            if "children" in ast_dict:
-                for child in ast_dict["children"]:
-                    if child["type"] == "Name" or child["type"] == "Attribute":
-                        calls.append(child["text"])
-        
-        # Recursively process children
-        if "children" in ast_dict:
-            for child in ast_dict["children"]:
-                calls.extend(self._find_python_calls(child))
-        
-        return calls
+        Args:
+            file_path: Path to the source file
+            
+        Returns:
+            Detected language or 'unknown'
+        """
+        ext = os.path.splitext(file_path)[1].lower()
+        language = self.language_extensions.get(ext, "unknown")
+        return language
     
-    def _find_ts_calls(self, ast_dict: Dict[str, Any], lang: str) -> List[str]:
-        """Find calls in Tree-Sitter AST."""
-        calls = []
+    def _detect_language_from_code(self, code: str) -> str:
+        """
+        Attempt to detect programming language from code content.
         
-        # Handle Java calls
-        if lang == "java":
-            if ast_dict["type"] == "method_invocation":
-                # Extract method name
-                if "children" in ast_dict:
-                    for child in ast_dict["children"]:
-                        if child["type"] == "identifier":
-                            calls.append(child["text"])
+        Args:
+            code: Source code
+            
+        Returns:
+            Detected language or 'unknown'
+        """
+        # Simple heuristics to detect language
+        if code.strip().startswith("<?php"):
+            return "php"
+        elif "function" in code and ("{" in code and "}" in code) and (";" in code):
+            return "javascript"
+        elif "def " in code and ":" in code and "import " in code:
+            return "python"
+        elif "class " in code and "{" in code and "public" in code and ";" in code:
+            return "java"
+        elif "package " in code and "import" in code and "func " in code:
+            return "go"
         
-        # Handle JavaScript calls
-        elif lang == "javascript":
-            if ast_dict["type"] == "call_expression":
-                # Extract function name
-                if "children" in ast_dict:
-                    for child in ast_dict["children"]:
-                        if child["type"] == "identifier" or child["type"] == "member_expression":
-                            calls.append(child["text"])
+        # Default to unknown
+        return "unknown"
+    
+    def _create_text_representation(self, code: str, language: str) -> Dict[str, Any]:
+        """
+        Create a simple text-based AST representation.
         
-        # Recursively process children
-        if "children" in ast_dict:
-            for child in ast_dict["children"]:
-                calls.extend(self._find_ts_calls(child, lang))
+        Args:
+            code: Source code
+            language: Programming language
+            
+        Returns:
+            Dictionary with simple text-based AST
+        """
+        lines = code.splitlines()
+        nodes = []
         
-        return calls
+        for i, line in enumerate(lines):
+            if line.strip():  # Skip empty lines
+                nodes.append({
+                    "type": "line",
+                    "content": line,
+                    "line_number": i + 1
+                })
+        
+        return {
+            "type": "text",
+            "language": language,
+            "node_count": len(nodes),
+            "nodes": nodes
+        }
+
+
+class PythonParser:
+    """Parser for Python using the built-in ast module."""
+    
+    def parse(self, code: str) -> Dict[str, Any]:
+        """
+        Parse Python code into AST.
+        
+        Args:
+            code: Python source code
+            
+        Returns:
+            Dictionary containing the AST
+        """
+        try:
+            # Parse the code
+            tree = ast.parse(code)
+            
+            # Convert AST to dictionary
+            ast_dict = self._ast_to_dict(tree)
+            
+            return {
+                "type": "ast",
+                "language": "python",
+                "root": ast_dict,
+                "node_count": self._count_nodes(ast_dict)
+            }
+            
+        except SyntaxError as e:
+            # Handle syntax errors
+            return {
+                "type": "error",
+                "language": "python",
+                "error_type": "SyntaxError",
+                "error_message": str(e),
+                "error_line": e.lineno,
+                "error_col": e.offset
+            }
+        except Exception as e:
+            # Handle other errors
+            return {
+                "type": "error",
+                "language": "python",
+                "error_type": type(e).__name__,
+                "error_message": str(e)
+            }
+    
+    def _ast_to_dict(self, node) -> Dict[str, Any]:
+        """
+        Convert a Python AST node to a dictionary.
+        
+        Args:
+            node: AST node
+            
+        Returns:
+            Dictionary representation of the node
+        """
+        if isinstance(node, ast.AST):
+            # Create dictionary for AST node
+            result = {
+                "type": node.__class__.__name__,
+                "attributes": {},
+                "children": {}
+            }
+            
+            # Add line and column information if available
+            if hasattr(node, "lineno"):
+                result["line"] = node.lineno
+                if hasattr(node, "col_offset"):
+                    result["col"] = node.col_offset
+                if hasattr(node, "end_lineno") and node.end_lineno is not None:
+                    result["end_line"] = node.end_lineno
+                    if hasattr(node, "end_col_offset") and node.end_col_offset is not None:
+                        result["end_col"] = node.end_col_offset
+            
+            # Process special nodes
+            if isinstance(node, ast.Name):
+                result["attributes"]["name"] = node.id
+            elif isinstance(node, ast.Constant):
+                result["attributes"]["value"] = repr(node.value)
+            elif isinstance(node, ast.FunctionDef):
+                result["attributes"]["name"] = node.name
+                result["attributes"]["args"] = [arg.arg for arg in node.args.args]
+                result["attributes"]["returns"] = self._ast_to_dict(node.returns) if node.returns else None
+            elif isinstance(node, ast.ClassDef):
+                result["attributes"]["name"] = node.name
+                result["attributes"]["bases"] = [self._ast_to_dict(base) for base in node.bases]
+            
+            # Process children
+            for field, value in ast.iter_fields(node):
+                if value is None:
+                    continue
+                elif isinstance(value, list):
+                    # Process list of nodes
+                    result["children"][field] = [
+                        self._ast_to_dict(item) for item in value
+                        if isinstance(item, ast.AST)
+                    ]
+                elif isinstance(value, ast.AST):
+                    # Process single node
+                    result["children"][field] = self._ast_to_dict(value)
+                else:
+                    # Process attribute
+                    result["attributes"][field] = value
+            
+            return result
+        elif isinstance(node, list):
+            return [self._ast_to_dict(item) for item in node]
+        else:
+            return node
+    
+    def _count_nodes(self, node: Dict[str, Any]) -> int:
+        """
+        Count nodes in an AST dictionary.
+        
+        Args:
+            node: Dictionary representation of an AST node
+            
+        Returns:
+            Number of nodes
+        """
+        if not isinstance(node, dict):
+            return 0
+        
+        count = 1  # Count this node
+        
+        # Count children
+        for field, value in node.get("children", {}).items():
+            if isinstance(value, list):
+                for item in value:
+                    count += self._count_nodes(item)
+            else:
+                count += self._count_nodes(value)
+        
+        return count

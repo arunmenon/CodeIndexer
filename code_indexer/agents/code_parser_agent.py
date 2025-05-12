@@ -1,212 +1,270 @@
 """
 Code Parser Agent
 
-This agent is responsible for parsing source files and extracting AST representations.
+Agent responsible for parsing source files into AST structures.
 """
 
-import os
-import pathlib
 import logging
-import time
-from typing import Dict, List, Any, Optional, Tuple
+import os
+from typing import Dict, Any, List, Optional, Tuple
 
-from google.adk import Agent, AgentContext
-from google.adk.tooling import BaseTool
-
-from code_indexer.tools.ast_extractor import ASTExtractorTool
+from google.adk.api.agent import Agent, AgentContext, HandlerResponse
+from google.adk.api.tool import ToolResponse
 
 
 class CodeParserAgent(Agent):
     """
     Agent responsible for parsing source files into AST structures.
     
-    This agent takes files from GitIngestionAgent, determines their language,
-    and uses the ASTExtractorTool to generate standardized AST representations.
+    This agent takes source files, detects their language, parses them into AST
+    structures using the appropriate parser, and passes the structured data to
+    the graph builder agent.
     """
     
-    def __init__(self):
-        """Initialize the Code Parser Agent."""
-        super().__init__()
-        self.logger = logging.getLogger(__name__)
-        
-        # Language detection configuration
-        self.ext_map = {
-            ".java": "java",
-            ".py": "python",
-            ".js": "javascript",
-            ".jsx": "javascript",
-            ".mjs": "javascript",
-            ".ts": "typescript",  # if supported
-        }
-        
-        # Max file size to parse (avoid binary files)
-        self.max_file_size = 1024 * 1024  # 1MB
-    
-    def initialize(self, context: AgentContext) -> None:
+    def __init__(self, config: Dict[str, Any]):
         """
-        Initialize the agent with necessary tools and state.
+        Initialize the code parser agent.
         
         Args:
-            context: The agent context
+            config: Configuration dictionary
+        """
+        super().__init__()
+        self.config = config
+        self.logger = logging.getLogger("code_parser_agent")
+        
+        # Configure defaults
+        self.max_file_size = config.get("max_file_size", 1024 * 1024)  # 1MB
+        self.batch_size = config.get("batch_size", 10)
+        
+        # State
+        self.ast_extractor = None
+    
+    def init(self, context: AgentContext) -> None:
+        """
+        Initialize the agent with the given context.
+        
+        Args:
+            context: Agent context providing access to tools and environment
         """
         self.context = context
         
-        # Initialize the AST extractor tool
-        self.ast_tool = ASTExtractorTool()
-        
-        # Load language overrides if configured
-        self.lang_overrides = context.state.get("lang_overrides", {})
+        # Get AST extractor tool
+        tool_response = context.get_tool("ast_extractor_tool")
+        if tool_response.status.is_success():
+            self.ast_extractor = tool_response.tool
+            self.logger.info("Successfully acquired AST extractor tool")
+        else:
+            self.logger.error("Failed to acquire AST extractor tool: %s", 
+                             tool_response.status.message)
     
-    def run(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+    def run(self, input_data: Dict[str, Any]) -> HandlerResponse:
         """
-        Process and parse source files.
+        Parse source files into AST structures.
         
         Args:
-            inputs: Dictionary containing repository information and files to process
+            input_data: Dictionary containing files to parse
             
         Returns:
-            Dictionary with parsed files and their AST representations
+            HandlerResponse with parsing results
         """
-        # Extract inputs
-        repo_path = inputs.get("repo_path")
-        added_files = inputs.get("added_files", [])
+        self.logger.info("Starting code parser agent")
         
-        if not repo_path or not added_files:
-            self.logger.warning("No repository path or files provided")
-            return {
-                "parsed_files": [],
-                "skipped_files": [],
-                "repo_path": repo_path
-            }
+        # Check if AST extractor is available
+        if not self.ast_extractor:
+            return HandlerResponse.error("AST extractor tool not available")
         
-        # Track progress and results
+        # Extract files from input
+        files = input_data.get("files", [])
+        if not files:
+            return HandlerResponse.error("No files to parse")
+        
+        repository = input_data.get("repository", "")
+        repository_url = input_data.get("url", "")
+        commit = input_data.get("commit", "")
+        branch = input_data.get("branch", "")
+        is_full_indexing = input_data.get("is_full_indexing", False)
+        
+        # Create batches
+        file_batches = self._create_batches(files)
+        
+        # Process each batch
         parsed_files = []
-        skipped_files = []
+        failed_files = []
         
-        # Process each file
-        for file_path in added_files:
-            full_path = os.path.join(repo_path, file_path)
+        for batch_index, file_batch in enumerate(file_batches):
+            self.logger.info(f"Processing batch {batch_index + 1}/{len(file_batches)}")
             
-            # Skip files that don't exist
-            if not os.path.exists(full_path):
-                self.logger.warning(f"File not found: {full_path}")
-                skipped_files.append({
-                    "path": file_path,
-                    "reason": "file_not_found"
-                })
-                continue
-            
-            # Skip files that are too large
-            if os.path.getsize(full_path) > self.max_file_size:
-                self.logger.info(f"Skipping large file: {file_path}")
-                skipped_files.append({
-                    "path": file_path,
-                    "reason": "file_too_large"
-                })
-                continue
-            
-            # Detect language
-            language = self._detect_lang(file_path)
-            
-            if not language:
-                self.logger.info(f"Skipping unsupported language: {file_path}")
-                skipped_files.append({
-                    "path": file_path,
-                    "reason": "unsupported_language"
-                })
-                continue
-            
-            # Parse file with AST extractor
-            try:
-                start_time = time.time()
-                ast_data = self.ast_tool.extract(full_path, language)
+            # Parse files in batch
+            for file_data in file_batch:
+                file_path = file_data.get("path", "")
+                content = file_data.get("content", "")
                 
-                # Generate a unique ID based on file path and content
-                file_id = self._generate_file_id(file_path)
+                if not file_path or not content:
+                    self.logger.warning(f"Skipping file with missing path or content")
+                    continue
                 
-                # Find function calls
-                calls = self.ast_tool.find_calls(ast_data, language)
+                # Check file size
+                if len(content) > self.max_file_size:
+                    self.logger.warning(f"Skipping large file: {file_path}")
+                    failed_files.append({
+                        "path": file_path,
+                        "error": "File too large"
+                    })
+                    continue
                 
-                # Add to parsed files
-                parsed_files.append({
-                    "path": file_path,
-                    "full_path": full_path,
-                    "language": language,
-                    "file_id": file_id,
-                    "ast": ast_data,
-                    "calls": calls,
-                    "parse_time": time.time() - start_time
-                })
+                # Parse file
+                parse_result = self._parse_file(
+                    file_path=file_path,
+                    content=content,
+                    repository=repository,
+                    repository_url=repository_url,
+                    commit=commit,
+                    branch=branch
+                )
                 
-                self.logger.info(f"Parsed {file_path} as {language}")
-                
-            except Exception as e:
-                self.logger.error(f"Error parsing {file_path}: {e}")
-                skipped_files.append({
-                    "path": file_path,
-                    "reason": "parse_error",
-                    "error": str(e)
-                })
+                if parse_result.get("status") == "success":
+                    parsed_files.append(parse_result.get("ast"))
+                else:
+                    failed_files.append({
+                        "path": file_path,
+                        "error": parse_result.get("error", "Unknown error")
+                    })
         
-        # Return results
-        return {
-            "parsed_files": parsed_files,
-            "skipped_files": skipped_files,
-            "repo_path": repo_path
-        }
+        # Send parsed files to graph builder
+        send_result = self._send_to_graph_builder(
+            parsed_files=parsed_files,
+            repository=repository,
+            repository_url=repository_url,
+            commit=commit,
+            branch=branch,
+            is_full_indexing=is_full_indexing
+        )
+        
+        return HandlerResponse.success({
+            "files_parsed": len(parsed_files),
+            "files_failed": len(failed_files),
+            "graph_builder_status": send_result.get("status", "unknown"),
+            "failed_files": failed_files[:10]  # Include only the first 10 failed files
+        })
     
-    def _detect_lang(self, path: str) -> Optional[str]:
+    def _create_batches(self, files: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
         """
-        Detect the programming language of a file.
+        Create batches of files for processing.
         
         Args:
-            path: Path to the file
+            files: List of file data
             
         Returns:
-            Language string or None if unsupported
+            List of file data batches
         """
-        # 1. Fast path: by extension
-        ext = pathlib.Path(path).suffix.lower()
-        if ext in self.ext_map:
-            return self.ext_map[ext]
-        
-        # 2. Repository-specific overrides
-        for prefix, lang in self.lang_overrides.items():
-            if path.startswith(prefix):
-                return lang
-        
-        # 3. Content sniff fallback
-        if os.path.exists(path):
-            try:
-                with open(path, "rb") as f:
-                    start = f.read(200).decode("utf-8", "ignore")
-                
-                # Check for Python shebang
-                if start.startswith("#!") and "python" in start:
-                    return "python"
-                
-                # Check for Java package/class patterns
-                if "package " in start and "class " in start:
-                    return "java"
-                
-                # Check for JavaScript patterns
-                if "function " in start or "const " in start or "let " in start:
-                    return "javascript"
-            except Exception:
-                pass
-        
-        # Unsupported language
-        return None
+        batches = []
+        for i in range(0, len(files), self.batch_size):
+            batches.append(files[i:i + self.batch_size])
+        return batches
     
-    def _generate_file_id(self, file_path: str) -> str:
+    def _parse_file(self, file_path: str, content: str, repository: str,
+                  repository_url: str, commit: str, branch: str) -> Dict[str, Any]:
         """
-        Generate a unique ID for a file.
+        Parse a single file.
         
         Args:
             file_path: Path to the file
+            content: File content
+            repository: Repository name
+            repository_url: Repository URL
+            commit: Commit hash
+            branch: Branch name
             
         Returns:
-            Unique ID string
+            Dictionary with parsing results
         """
-        import hashlib
-        return hashlib.md5(file_path.encode()).hexdigest()
+        try:
+            # Extract file extension for language detection
+            _, ext = os.path.splitext(file_path)
+            
+            # Extract AST
+            ast_dict = self.ast_extractor.extract_ast(content, file_path=file_path)
+            
+            # Add metadata
+            ast_dict["repository"] = repository
+            ast_dict["repository_url"] = repository_url
+            ast_dict["commit"] = commit
+            ast_dict["branch"] = branch
+            ast_dict["file_path"] = file_path
+            
+            return {
+                "status": "success",
+                "ast": ast_dict
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Failed to parse file {file_path}: {e}")
+            return {
+                "status": "error",
+                "error": str(e)
+            }
+    
+    def _send_to_graph_builder(self, parsed_files: List[Dict[str, Any]],
+                             repository: str, repository_url: str,
+                             commit: str, branch: str, 
+                             is_full_indexing: bool) -> Dict[str, Any]:
+        """
+        Send parsed files to graph builder.
+        
+        Args:
+            parsed_files: List of parsed AST dictionaries
+            repository: Repository name
+            repository_url: Repository URL
+            commit: Commit hash
+            branch: Branch name
+            is_full_indexing: Whether this is a full indexing
+            
+        Returns:
+            Dictionary with send results
+        """
+        if not parsed_files:
+            return {
+                "status": "success",
+                "message": "No files to send"
+            }
+        
+        try:
+            # Prepare input for graph builder
+            graph_builder_input = {
+                "asts": parsed_files,
+                "repository": repository,
+                "repository_url": repository_url,
+                "commit": commit,
+                "branch": branch,
+                "is_full_indexing": is_full_indexing
+            }
+            
+            # Get graph builder agent
+            tool_response = self.context.get_tool("graph_builder_agent")
+            if not tool_response.status.is_success():
+                return {
+                    "status": "error",
+                    "message": f"Failed to get graph builder agent: {tool_response.status.message}"
+                }
+            
+            # Call graph builder agent
+            graph_builder = tool_response.tool
+            response = graph_builder.run(graph_builder_input)
+            
+            if not isinstance(response, ToolResponse) or not response.status.is_success():
+                return {
+                    "status": "error",
+                    "message": f"Failed to send to graph builder: {response.status.message if isinstance(response, ToolResponse) else 'Unknown error'}"
+                }
+            
+            return {
+                "status": "success",
+                "message": "Files sent to graph builder"
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Failed to send to graph builder: {e}")
+            return {
+                "status": "error",
+                "message": f"Failed to send to graph builder: {str(e)}"
+            }
