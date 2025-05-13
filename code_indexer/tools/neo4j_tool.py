@@ -8,8 +8,9 @@ import os
 import logging
 from typing import Dict, List, Any, Optional, Tuple, Union
 
-from google.adk.tooling import BaseTool
-from google.adk.api.tool import ToolContext, ToolResponse, ToolStatus
+from google.adk.agents.llm_agent import BaseTool
+from google.adk.agents.llm_agent import ToolContext
+from google.adk.tools.google_api_tool import ToolResponse, ToolStatus
 
 # Import Neo4j conditionally to handle environments without it
 try:

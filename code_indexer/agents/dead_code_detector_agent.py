@@ -8,8 +8,9 @@ import logging
 import time
 from typing import Dict, List, Any, Optional, Tuple, Union
 
-from google.adk.api.agent import Agent, AgentContext, HandlerResponse
-from google.adk.api.tool import ToolResponse, ToolStatus
+from google.adk import Agent
+from google.adk.tools.google_api_tool import AgentContext, HandlerResponse
+from google.adk.tools.google_api_tool import ToolResponse, ToolStatus
 
 from code_indexer.tools.neo4j_tool import Neo4jTool
 

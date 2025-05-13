@@ -9,8 +9,9 @@ import json
 import asyncio
 from typing import Dict, Any, List, Optional, Tuple, Union
 
-from google.adk.api.agent import Agent, AgentContext, HandlerResponse
-from google.adk.api.tool import ToolResponse
+from google.adk import Agent
+from google.adk.tools.google_api_tool import AgentContext, HandlerResponse
+from google.adk.tools.google_api_tool import ToolResponse
 
 class SearchOrchestratorAgent(Agent):
     """
