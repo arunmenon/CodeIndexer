@@ -10,7 +10,7 @@ import uuid
 from typing import Dict, List, Any, Optional, Tuple
 
 from google.adk import Agent, AgentContext
-from google.adk.tooling import BaseTool
+from google.adk.agents.llm_agent import BaseTool
 
 from code_indexer.tools.neo4j_tool import Neo4jTool
 

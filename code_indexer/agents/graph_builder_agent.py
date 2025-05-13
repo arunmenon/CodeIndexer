@@ -10,8 +10,9 @@ import time
 import hashlib
 from typing import Dict, List, Any, Optional, Tuple, Union
 
-from google.adk.api.agent import Agent, AgentContext, HandlerResponse
-from google.adk.api.tool import ToolResponse, ToolStatus
+from google.adk import Agent
+from google.adk.tools.google_api_tool import AgentContext, HandlerResponse
+from google.adk.tools.google_api_tool import ToolResponse, ToolStatus
 
 from code_indexer.tools.neo4j_tool import Neo4jTool
 from code_indexer.utils.ast_utils import find_entity_in_ast, get_function_info, get_class_info

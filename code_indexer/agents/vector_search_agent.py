@@ -8,9 +8,9 @@ import logging
 import json
 from typing import Dict, Any, List, Optional, Tuple, Union
 
-from google.adk.api.agent import Agent, AgentContext, HandlerResponse
-from google.adk.api.tool import ToolResponse
+from code_indexer.agents.adk_adapter import Agent, AgentContext, HandlerResponse, ToolResponse, init_agent
 
+@init_agent(name="vector_search_agent")
 class VectorSearchAgent(Agent):
     """
     Agent responsible for performing vector similarity search on code embeddings.
@@ -27,18 +27,29 @@ class VectorSearchAgent(Agent):
         Args:
             config: Configuration dictionary
         """
-        super().__init__()
-        self.config = config
-        self.logger = logging.getLogger("vector_search_agent")
+        # The Agent initialization is handled by the decorator
+        # This method is not directly called - wrapper setup is done in init_wrapper
+        pass
+    
+    def init_wrapper(self, wrapper, config: Dict[str, Any], *args, **kwargs):
+        """
+        Initialize the wrapper with agent state.
+        
+        Args:
+            wrapper: Agent wrapper instance
+            config: Configuration dictionary
+        """
+        # Store the configuration
+        wrapper.config = config
         
         # Configure defaults
-        self.default_collection = config.get("default_collection", "code_embeddings")
-        self.default_top_k = config.get("default_top_k", 10)
-        self.minimum_score = config.get("minimum_score", 0.7)  # Minimum similarity score (0-1)
-        self.reranking_enabled = config.get("reranking_enabled", True)
+        wrapper.default_collection = config.get("default_collection", "code_embeddings")
+        wrapper.default_top_k = config.get("default_top_k", 10)
+        wrapper.minimum_score = config.get("minimum_score", 0.7)  # Minimum similarity score (0-1)
+        wrapper.reranking_enabled = config.get("reranking_enabled", True)
         
         # Available tools
-        self.vector_store_agent = None
+        wrapper.vector_store_agent = None
     
     def init(self, context: AgentContext) -> None:
         """
@@ -47,28 +58,31 @@ class VectorSearchAgent(Agent):
         Args:
             context: Agent context providing access to tools and environment
         """
-        self.context = context
+        # Get wrapper for this agent
+        wrapper = self.get_wrapper()
+        wrapper.context = context
         
         # Get vector store agent
         tool_response = context.get_tool("vector_store_agent")
         if tool_response.status.is_success():
-            self.vector_store_agent = tool_response.tool
-            self.logger.info("Successfully acquired vector store agent")
+            wrapper.vector_store_agent = tool_response.tool
+            wrapper.logger.info("Successfully acquired vector store agent")
         else:
-            self.logger.error("Failed to acquire vector store agent: %s", 
-                              tool_response.status.message)
+            wrapper.logger.error("Failed to acquire vector store agent: %s", 
+                                tool_response.status.message)
     
-    def run(self, input_data: Dict[str, Any]) -> HandlerResponse:
+    def run(self, wrapper, input_data: Dict[str, Any]) -> HandlerResponse:
         """
         Perform vector search for a query.
         
         Args:
+            wrapper: Agent wrapper with state
             input_data: Dictionary containing search parameters
             
         Returns:
             HandlerResponse with search results
         """
-        self.logger.info("Performing vector search")
+        wrapper.logger.info("Performing vector search")
         
         # Extract search specification
         search_spec = input_data.get("search_spec", {})
@@ -84,12 +98,13 @@ class VectorSearchAgent(Agent):
             return HandlerResponse.error("No query embedding provided")
         
         # Extract search parameters
-        collection = input_data.get("collection", self.default_collection)
-        top_k = input_data.get("max_results", self.default_top_k)
+        collection = input_data.get("collection", wrapper.default_collection)
+        top_k = input_data.get("max_results", wrapper.default_top_k)
         filters = search_spec.get("filters", {})
         
         # Perform primary search
         primary_results = self._perform_search(
+            wrapper=wrapper,
             collection=collection,
             embedding=primary_embedding,
             top_k=top_k,
@@ -104,6 +119,7 @@ class VectorSearchAgent(Agent):
             
             if expanded_embedding:
                 results = self._perform_search(
+                    wrapper=wrapper,
                     collection=collection,
                     embedding=expanded_embedding,
                     top_k=top_k // 2,  # Fewer results for expanded queries
@@ -117,18 +133,18 @@ class VectorSearchAgent(Agent):
                     })
         
         # Merge and rerank results if needed
-        if self.reranking_enabled and expanded_results:
-            all_results = self._merge_and_rerank(primary_results, expanded_results)
+        if wrapper.reranking_enabled and expanded_results:
+            all_results = self._merge_and_rerank(wrapper, primary_results, expanded_results)
         else:
             all_results = primary_results
         
         # Filter results based on minimum score
-        filtered_results = [r for r in all_results if r["score"] >= self.minimum_score]
+        filtered_results = [r for r in all_results if r["score"] >= wrapper.minimum_score]
         
         # Process results to include text content
-        processed_results = self._process_results(filtered_results)
+        processed_results = self._process_results(wrapper, filtered_results)
         
-        self.logger.info(f"Vector search completed: {len(processed_results)} results found")
+        wrapper.logger.info(f"Vector search completed: {len(processed_results)} results found")
         return HandlerResponse.success({
             "results": processed_results,
             "total_count": len(processed_results),
@@ -136,12 +152,13 @@ class VectorSearchAgent(Agent):
             "collection": collection
         })
     
-    def _perform_search(self, collection: str, embedding: List[float], top_k: int, 
+    def _perform_search(self, wrapper, collection: str, embedding: List[float], top_k: int, 
                       filters: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
         Perform a single vector search.
         
         Args:
+            wrapper: Agent wrapper with state
             collection: Vector store collection
             embedding: Query embedding
             top_k: Number of results to return
@@ -150,8 +167,8 @@ class VectorSearchAgent(Agent):
         Returns:
             List of search results
         """
-        if not self.vector_store_agent:
-            self.logger.error("Vector store agent not available")
+        if not wrapper.vector_store_agent:
+            wrapper.logger.error("Vector store agent not available")
             return []
         
         try:
@@ -164,7 +181,7 @@ class VectorSearchAgent(Agent):
             }
             
             # Call the vector store agent to perform the search
-            tool_response = self.vector_store_agent.search(search_params)
+            tool_response = wrapper.vector_store_agent.search(search_params)
             
             if isinstance(tool_response, ToolResponse) and tool_response.status.is_success():
                 results = tool_response.data.get("results", [])
@@ -181,18 +198,19 @@ class VectorSearchAgent(Agent):
                 
                 return normalized_results
             else:
-                self.logger.error(f"Vector search failed: {tool_response.status.message if isinstance(tool_response, ToolResponse) else 'Unknown error'}")
+                wrapper.logger.error(f"Vector search failed: {tool_response.status.message if isinstance(tool_response, ToolResponse) else 'Unknown error'}")
                 return []
         except Exception as e:
-            self.logger.error(f"Error performing vector search: {e}")
+            wrapper.logger.error(f"Error performing vector search: {e}")
             return []
     
-    def _merge_and_rerank(self, primary_results: List[Dict[str, Any]], 
+    def _merge_and_rerank(self, wrapper, primary_results: List[Dict[str, Any]], 
                         expanded_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Merge and rerank results from primary and expanded searches.
         
         Args:
+            wrapper: Agent wrapper with state
             primary_results: Results from primary query
             expanded_results: Results from expanded queries
             
@@ -220,15 +238,16 @@ class VectorSearchAgent(Agent):
                     merged_results.append(result)
         
         # Apply reranking
-        reranked_results = self._rerank_results(merged_results)
+        reranked_results = self._rerank_results(wrapper, merged_results)
         
         return reranked_results
     
-    def _rerank_results(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _rerank_results(self, wrapper, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Rerank results based on custom criteria.
         
         Args:
+            wrapper: Agent wrapper with state
             results: List of search results
             
         Returns:
@@ -264,11 +283,12 @@ class VectorSearchAgent(Agent):
         
         return reranked
     
-    def _process_results(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _process_results(self, wrapper, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Process results to include text content and additional metadata.
         
         Args:
+            wrapper: Agent wrapper with state
             results: Vector search results
             
         Returns:
@@ -293,7 +313,7 @@ class VectorSearchAgent(Agent):
                 "entity_id": metadata.get("entity_id", ""),
                 "start_line": metadata.get("start_line", 0),
                 "end_line": metadata.get("end_line", 0),
-                "code_content": self._get_code_content(metadata),
+                "code_content": self._get_code_content(wrapper, metadata),
                 "metadata": metadata
             }
             
@@ -301,7 +321,7 @@ class VectorSearchAgent(Agent):
         
         return processed_results
     
-    def _get_code_content(self, metadata: Dict[str, Any]) -> str:
+    def _get_code_content(self, wrapper, metadata: Dict[str, Any]) -> str:
         """
         Get code content from metadata.
         
@@ -309,6 +329,7 @@ class VectorSearchAgent(Agent):
         repository or a content cache.
         
         Args:
+            wrapper: Agent wrapper with state
             metadata: Result metadata
             
         Returns:

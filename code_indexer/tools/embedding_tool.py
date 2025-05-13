@@ -10,7 +10,7 @@ import time
 import numpy as np
 from typing import Dict, List, Any, Optional, Union
 
-from google.adk.tooling import BaseTool
+from google.adk.agents.llm_agent import BaseTool
 
 # Try to import different embedding libraries
 HAS_SENTENCE_TRANSFORMERS = False

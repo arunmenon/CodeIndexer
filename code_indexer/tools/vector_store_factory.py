@@ -17,13 +17,6 @@ except ImportError:
     HAS_MILVUS = False
     logging.warning("Milvus support not available. Install pymilvus package to enable it.")
 
-try:
-    from code_indexer.tools.qdrant_vector_store import QdrantVectorStore
-    HAS_QDRANT = True
-except ImportError:
-    HAS_QDRANT = False
-    logging.warning("Qdrant support not available. Install qdrant-client package to enable it.")
-
 
 class VectorStoreFactory:
     """
@@ -57,18 +50,9 @@ class VectorStoreFactory:
             # Import here to avoid circular import
             from code_indexer.tools.milvus_vector_store import MilvusVectorStore
             return MilvusVectorStore(config.get("milvus", {}))
-            
-        elif store_type == "qdrant":
-            if not HAS_QDRANT:
-                raise ImportError("Qdrant support requires qdrant-client package")
-            
-            # Import here to avoid circular import
-            from code_indexer.tools.qdrant_vector_store import QdrantVectorStore
-            return QdrantVectorStore(config.get("qdrant", {}))
-            
         else:
             raise ValueError(f"Unsupported vector store type: {store_type}. "
-                           f"Supported types: milvus, qdrant")
+                           f"Supported types: milvus")
     
     @staticmethod
     def available_stores() -> Dict[str, bool]:
@@ -79,6 +63,5 @@ class VectorStoreFactory:
             Dictionary mapping store types to availability status
         """
         return {
-            "milvus": HAS_MILVUS,
-            "qdrant": HAS_QDRANT
+            "milvus": HAS_MILVUS
         }

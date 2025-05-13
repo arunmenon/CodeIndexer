@@ -7,7 +7,7 @@ Provides a simple API for accessing the Code Indexer's search functionality.
 import logging
 from typing import Dict, Any, List, Optional
 
-from google.adk.api.agent import AgentContext
+from google.adk.tools.google_api_tool import AgentContext
 
 class CodeSearchAPI:
     """

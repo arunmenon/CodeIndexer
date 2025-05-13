@@ -1,0 +1,9 @@
+pattern: indexing_pipeline
+description: "Code indexing pipeline for repository processing"
+agents:
+  - git_ingestion_agent
+  - code_parser_agent
+  - graph_builder_agent
+  - chunker_agent
+  - embedding_agent
+  - vector_store_agent
