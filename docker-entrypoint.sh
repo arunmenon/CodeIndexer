@@ -30,6 +30,13 @@ fi
 echo "Setting up vector store..."
 python -m code_indexer.utils.setup_vector_store
 
-# Execute the provided command
-echo "Starting Code Indexer with command: $@"
-exec "$@"
+# Check if a command was provided
+if [ $# -gt 0 ]; then
+    # Execute the provided command
+    echo "Starting Code Indexer with command: $@"
+    exec "$@"
+else
+    # Default to running the API with ADK Runner
+    echo "Starting Code Indexer API with ADK Runner..."
+    exec adk run api --team teams/query_team.yaml --port 8000
+fi

@@ -1,0 +1,8 @@
+pattern: query_pipeline
+description: "Code search query pipeline"
+agents:
+  - query_agent
+  - vector_search_agent
+  - graph_search_agent
+  - answer_composer_agent
+  - search_orchestrator_agent
