@@ -15,6 +15,7 @@
 - Docker compose configuration for Neo4j and Milvus
 - Team YAML files for ADK Runner
 - Entry point script with dependency waiting
+- Simplified vector store support to focus exclusively on Milvus
 
 ## 0.1.0 (2024-03-01)
 

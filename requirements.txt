@@ -6,9 +6,8 @@ typing-extensions>=4.0.0
 # Google ADK
 google-adk>=0.6.0
 
-# Vector databases
-pymilvus>=2.2.0  # Optional: for Milvus vector store
-qdrant-client>=1.1.0  # Optional: for Qdrant vector store
+# Vector database
+pymilvus>=2.4.0  # Default vector store
 
 # Graph database
 neo4j>=5.5.0  # For code knowledge graph

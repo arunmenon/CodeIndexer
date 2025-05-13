@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codeindexer"
+version = "0.2.0"
+description = "Code indexing and search system with vector and graph storage"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {file = "LICENSE"}
+authors = [
+    {name = "CodeIndexer Team"}
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+]
+
+dependencies = [
+    "numpy>=1.20.0",
+    "pyyaml>=6.0",
+    "typing-extensions>=4.0.0",
+    "google-adk>=0.6.0",
+    "pymilvus>=2.4.0",
+    "neo4j>=5.5.0",
+    "tree-sitter>=0.20.0",
+    "sentence-transformers>=2.2.0",
+    "gitpython>=3.1.30",
+    "tqdm>=4.64.0",
+    "loguru>=0.6.0",
+    "tenacity>=8.1.0",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/username/codeindexer"
+"Bug Tracker" = "https://github.com/username/codeindexer/issues"
+
+[tool.setuptools]
+packages = ["code_indexer"]
