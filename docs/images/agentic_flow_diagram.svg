@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   xmlns="http://www.w3.org/2000/svg"
+   width="800"
+   height="600"
+   viewBox="0 0 800 600"
+   version="1.1">
+  <style>
+    .agent { fill: #d4f1f9; stroke: #05c8e8; stroke-width: 2; }
+    .pattern { fill: #f9d4d4; stroke: #e80505; stroke-width: 2; }
+    .arrow { stroke: #333; stroke-width: 2; fill: none; marker-end: url(#arrowhead); }
+    .label { font-family: Arial, sans-serif; font-size: 12px; text-anchor: middle; }
+    .title { font-family: Arial, sans-serif; font-size: 16px; font-weight: bold; text-anchor: middle; }
+  </style>
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#333" />
+    </marker>
+  </defs>
+  
+  <!-- Title -->
+  <text x="400" y="30" class="title">Code Indexer: End-to-End Agentic Flow</text>
+  
+  <!-- Agents -->
+  <rect x="50" y="80" width="120" height="80" rx="10" ry="10" class="agent" />
+  <text x="110" y="115" class="label">Git Repository</text>
+  <text x="110" y="135" class="label">Monitor Agent</text>
+  
+  <rect x="220" y="80" width="120" height="80" rx="10" ry="10" class="agent" />
+  <text x="280" y="115" class="label">Code Parser</text>
+  <text x="280" y="135" class="label">Agent</text>
+  
+  <rect x="390" y="80" width="120" height="80" rx="10" ry="10" class="agent" />
+  <text x="450" y="115" class="label">Graph Builder</text>
+  <text x="450" y="135" class="label">Agent</text>
+  
+  <rect x="560" y="80" width="120" height="80" rx="10" ry="10" class="agent" />
+  <text x="620" y="115" class="label">Semantic Chunking</text>
+  <text x="620" y="135" class="label">Agent</text>
+  
+  <rect x="390" y="200" width="120" height="80" rx="10" ry="10" class="agent" />
+  <text x="450" y="235" class="label">Dead Code</text>
+  <text x="450" y="255" class="label">Detector Agent</text>
+  
+  <rect x="560" y="200" width="120" height="80" rx="10" ry="10" class="agent" />
+  <text x="620" y="235" class="label">Search</text>
+  <text x="620" y="255" class="label">Agent</text>
+  
+  <!-- Arrows -->
+  <path d="M 170 120 L 220 120" class="arrow" />
+  <path d="M 340 120 L 390 120" class="arrow" />
+  <path d="M 510 120 L 560 120" class="arrow" />
+  <path d="M 450 160 L 450 200" class="arrow" />
+  <path d="M 510 240 L 560 240" class="arrow" />
+  
+  <!-- Flow labels -->
+  <text x="195" y="110" class="label">Repository</text>
+  <text x="195" y="125" class="label">Changes</text>
+  
+  <text x="365" y="110" class="label">AST</text>
+  <text x="365" y="125" class="label">Representations</text>
+  
+  <text x="535" y="110" class="label">Knowledge</text>
+  <text x="535" y="125" class="label">Graph</text>
+  
+  <text x="470" y="180" class="label">Knowledge</text>
+  <text x="470" y="195" class="label">Graph</text>
+  
+  <text x="535" y="230" class="label">Analysis</text>
+  <text x="535" y="245" class="label">Results</text>
+  
+  <!-- ADK Patterns Section -->
+  <text x="400" y="320" class="title">ADK Patterns Implemented</text>
+  
+  <!-- Row 1 Patterns -->
+  <rect x="50" y="350" width="150" height="60" rx="10" ry="10" class="pattern" />
+  <text x="125" y="380" class="label">Sequential Pipeline Pattern</text>
+  
+  <rect x="220" y="350" width="150" height="60" rx="10" ry="10" class="pattern" />
+  <text x="295" y="380" class="label">Tool-Using Agent Pattern</text>
+  
+  <rect x="390" y="350" width="150" height="60" rx="10" ry="10" class="pattern" />
+  <text x="465" y="380" class="label">Loop Pattern</text>
+  
+  <rect x="560" y="350" width="150" height="60" rx="10" ry="10" class="pattern" />
+  <text x="635" y="380" class="label">Event-Driven Pattern</text>
+  
+  <!-- Row 2 Patterns -->
+  <rect x="50" y="430" width="150" height="60" rx="10" ry="10" class="pattern" />
+  <text x="125" y="460" class="label">Memory/Context Pattern</text>
+  
+  <rect x="220" y="430" width="150" height="60" rx="10" ry="10" class="pattern" />
+  <text x="295" y="460" class="label">Parallel Execution Pattern</text>
+  
+  <rect x="390" y="430" width="150" height="60" rx="10" ry="10" class="pattern" />
+  <text x="465" y="460" class="label">Chain-of-Thought Pattern</text>
+  
+  <rect x="560" y="430" width="150" height="60" rx="10" ry="10" class="pattern" />
+  <text x="635" y="460" class="label">Planner-Executor Pattern</text>
+  
+  <!-- Data Flow Summary -->
+  <text x="400" y="520" class="title">End-to-End Data Flow</text>
+  <text x="400" y="550" class="label">Repository → Code Files → AST Representation → Knowledge Graph → Search/Analysis</text>
+</svg>

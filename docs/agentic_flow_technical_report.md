@@ -18,7 +18,9 @@ The system employs a distributed, agent-based architecture where specialized age
 
 ## 2. End-to-End Agentic Flow
 
-![Code Indexer Agentic Flow](../docs/images/agentic_flow_diagram.png)
+![Code Indexer Agentic Flow](images/agentic_flow_diagram.svg)
+
+You can also view the flow as a Mermaid diagram in [images/agentic_flow_diagram.md](images/agentic_flow_diagram.md).
 
 ### 2.1 Complete Pipeline Flow
 

@@ -1,0 +1,50 @@
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│  GitIngestion   │     │   CodeParser    │     │  GraphBuilder   │     │     Search      │
+│     Agent       │────>│     Agent       │────>│     Agent       │────>│     Agent       │
+│                 │     │                 │     │                 │     │                 │
+└─────────────────┘     └─────────────────┘     └─────────────────┘     └─────────────────┘
+                                                        │                        ▲
+                                                        │                        │
+                                                        ▼                        │
+                                            ┌─────────────────┐                  │
+                                            │ DeadCodeDetector│                  │
+                                            │     Agent       │──────────────────┘
+                                            │                 │
+                                            └─────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                  │
+│  Event-Driven Pattern                              Tool-Using Pattern            │
+│  ┌─────────────────┐                               ┌─────────────────┐           │
+│  │   Repository    │                               │    Neo4j Tool   │           │
+│  │    Monitor      │                               │                 │           │
+│  └─────────────────┘                               └─────────────────┘           │
+│                                                                                  │
+│                                                                                  │
+│  Sequential Pipeline Pattern                       Memory/Context Pattern        │
+│  ┌─────────────────┐     ┌─────────────────┐       ┌─────────────────┐          │
+│  │     Input       │────>│   Processing    │       │   Persistent    │          │
+│  │                 │     │                 │       │     State       │          │
+│  └─────────────────┘     └─────────────────┘       └─────────────────┘          │
+│                                                                                  │
+│                                                                                  │
+│  Loop Pattern                                      Parallel Execution Pattern    │
+│  ┌─────────────────┐                               ┌─────────────────┐          │
+│  │   Iteration     │                               │   Concurrent    │          │
+│  │                 │                               │   Execution     │          │
+│  └─────────────────┘                               └─────────────────┘          │
+│                                                                                  │
+│                                                                                  │
+│  Chain-of-Thought Pattern                          Planner-Executor Pattern      │
+│  ┌─────────────────┐                               ┌─────────────────┐          │
+│  │    Reasoned     │                               │     Strategy    │          │
+│  │     Steps       │                               │    Execution    │          │
+│  └─────────────────┘                               └─────────────────┘          │
+│                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────┘
+
+DATA FLOW:
+
+Git Repo → Code Files → AST Representations → Knowledge Graph → Search Index
+                                                    ↓
+                              Dead Code Analysis ←───
