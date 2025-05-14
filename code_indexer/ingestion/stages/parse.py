@@ -10,7 +10,7 @@ import logging
 from typing import Dict, Any, List, Optional
 
 # Import our Tree-sitter AST extractor
-from ingestion_pipeline.treesitter_ast_extractor import create_tree_sitter_extractor
+from code_indexer.ingestion.direct.ast_extractor import create_tree_sitter_extractor
 
 # Configure logging
 logging.basicConfig(level=logging.INFO,

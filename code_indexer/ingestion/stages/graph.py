@@ -12,7 +12,7 @@ import time
 from typing import Dict, Any, List, Optional
 
 # Import Neo4j tool
-from ingestion_pipeline.direct_neo4j_tool import DirectNeo4jTool
+from code_indexer.ingestion.direct.neo4j_tool import DirectNeo4jTool
 from code_indexer.utils.ast_utils import find_entity_in_ast, get_function_info, get_class_info
 
 # Configure logging
