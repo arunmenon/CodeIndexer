@@ -1,4 +1,4 @@
-pattern: nightly_jobs
+pattern: parallel
 description: "Nightly analysis jobs for codebase maintenance"
 agents:
   - dead_code_detector_agent

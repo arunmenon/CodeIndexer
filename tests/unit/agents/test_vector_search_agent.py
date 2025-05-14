@@ -9,8 +9,8 @@ from typing import Dict, Any, List
 
 from code_indexer.agents.vector_search_agent import VectorSearchAgent
 
-from google.adk.api.agent import AgentContext, HandlerResponse
-from google.adk.api.tool import ToolResponse
+from google.adk.tools.google_api_tool import AgentContext, HandlerResponse
+from google.adk.tools.google_api_tool import ToolResponse
 
 
 @pytest.fixture
