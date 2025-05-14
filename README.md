@@ -82,38 +82,38 @@ python -m code_indexer.ingestion.setup_tree_sitter --languages python,javascript
 ### Running the Ingestion Pipeline
 
 ```bash
-# Process a repository
-python -m code_indexer.ingestion.run_enhanced_graph_builder --repo-path /path/to/repo --output-dir ./results
+# Using the CLI entry point
+codeindexer-ingest --repo-path /path/to/repo --output-dir ./results
 
 # Run incremental indexing
-python -m code_indexer.ingestion.run_enhanced_graph_builder --repo-path /path/to/repo
+codeindexer-ingest --repo-path /path/to/repo
 
 # Full reindexing
-python -m code_indexer.ingestion.run_enhanced_graph_builder --repo-path /path/to/repo --full-indexing
+codeindexer-ingest --repo-path /path/to/repo --full-indexing
 
 # Configure resolution strategy based on repository size
-python -m code_indexer.ingestion.run_enhanced_graph_builder --repo-path /path/to/repo --resolution-strategy join  # Default, for repos with <2M definitions
-python -m code_indexer.ingestion.run_enhanced_graph_builder --repo-path /path/to/repo --resolution-strategy hashmap  # For repos with 2-5M definitions
-python -m code_indexer.ingestion.run_enhanced_graph_builder --repo-path /path/to/repo --resolution-strategy sharded  # For massive repos >5M definitions
+codeindexer-ingest --repo-path /path/to/repo --resolution-strategy join  # Default, for repos with <2M definitions
+codeindexer-ingest --repo-path /path/to/repo --resolution-strategy hashmap  # For repos with 2-5M definitions
+codeindexer-ingest --repo-path /path/to/repo --resolution-strategy sharded  # For massive repos >5M definitions
 
 # Control when resolution happens
-python -m code_indexer.ingestion.run_enhanced_graph_builder --repo-path /path/to/repo --immediate-resolution  # Resolve during ingestion
-python -m code_indexer.ingestion.run_enhanced_graph_builder --repo-path /path/to/repo  # Bulk resolution at end
+codeindexer-ingest --repo-path /path/to/repo --immediate-resolution  # Resolve during ingestion
+codeindexer-ingest --repo-path /path/to/repo  # Bulk resolution at end
 ```
 
-### Running the Enhanced Graph Builder
+### Alternative: Using the Python Module
 
 ```bash
-# Process a repository with enhanced graph builder (placeholder pattern)
-python run_enhanced_graph_builder.py --repo-path /path/to/repo --resolution-strategy join
+# Process a repository with the ingestion pipeline
+python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/repo --resolution-strategy join
 
 # Options for different codebase sizes
-python run_enhanced_graph_builder.py --repo-path /path/to/repo --resolution-strategy hashmap  # For medium repos (2-5M definitions)
-python run_enhanced_graph_builder.py --repo-path /path/to/repo --resolution-strategy sharded  # For large repos (>5M definitions)
+python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/repo --resolution-strategy hashmap  # For medium repos (2-5M definitions)
+python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/repo --resolution-strategy sharded  # For large repos (>5M definitions)
 
 # Control how resolution happens
-python run_enhanced_graph_builder.py --repo-path /path/to/repo --immediate-resolution  # Resolve during processing
-python run_enhanced_graph_builder.py --repo-path /path/to/repo  # Bulk resolution at the end
+python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/repo --immediate-resolution  # Resolve during processing
+python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/repo  # Bulk resolution at the end
 ```
 
 ### Running the Semantic API (requires ADK)

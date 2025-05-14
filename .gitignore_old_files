@@ -1,0 +1,22 @@
+# Old files that have been reorganized
+/direct_git_ingestion.py
+/direct_code_parser.py
+/direct_graph_builder.py
+/direct_neo4j_tool.py
+/enhanced_graph_builder.py
+/run_enhanced_graph_builder.py
+/convert_to_direct_adk.py
+/find_adk_paths.py
+/run_code_parser.py
+/run_git_ingestion.py
+/run_graph_builder.py
+/run_indexing_pipeline.py
+/run_pipeline.py
+/run_pipeline_v2.py
+/run_single_agent.py
+/run_tests.py
+/simple_test.py
+/simple_test_api.py
+/simplified_graph_builder.py
+/test_api.py
+/update_imports.py
