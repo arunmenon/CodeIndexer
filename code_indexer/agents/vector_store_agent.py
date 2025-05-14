@@ -9,11 +9,19 @@ import time
 import numpy as np
 from typing import Dict, List, Any, Optional, Union
 
-from google.adk import Agent, AgentContext
+from google.adk import Agent, AgentSpec
+from google.adk.runtime.context import AgentContext
+from google.adk.runtime.responses import HandlerResponse, ToolResponse, ToolStatus
 from google.adk.agents.llm_agent import BaseTool
 
-from code_indexer.tools.vector_store_factory import VectorStoreFactory
-from code_indexer.tools.vector_store_interface import VectorStoreInterface
+# Import vector store components with proper error handling
+try:
+    from code_indexer.tools.vector_store_factory import VectorStoreFactory
+    from code_indexer.tools.vector_store_interface import VectorStoreInterface
+    HAS_VECTOR_STORE = True
+except ImportError as e:
+    HAS_VECTOR_STORE = False
+    logging.warning(f"Vector store support not fully available: {e}. Install required dependencies (pymilvus or qdrant-client) based on your configuration.")
 
 
 class VectorStoreAgent(Agent):
@@ -24,10 +32,16 @@ class VectorStoreAgent(Agent):
     search functionality to find semantically similar code.
     """
     
-    def __init__(self):
-        """Initialize the Vector Store Agent."""
-        super().__init__()
-        self.logger = logging.getLogger(__name__)
+    def __init__(self, name: str = "vector_store_agent", **kwargs):
+        """
+        Initialize the Vector Store Agent.
+        
+        Args:
+            name: Agent name
+            **kwargs: Additional parameters including config
+        """
+        super().__init__(name=name)
+        self.logger = logging.getLogger(name)
         self.vector_store = None
         
         # Default configuration
@@ -35,7 +49,7 @@ class VectorStoreAgent(Agent):
         self.embedding_dimension = 1536  # Default for most embedding models
         self.batch_size = 100
     
-    def initialize(self, context: AgentContext) -> None:
+    def init(self, context: AgentContext) -> None:
         """
         Initialize the agent with necessary tools and state.
         
@@ -43,6 +57,11 @@ class VectorStoreAgent(Agent):
             context: The agent context
         """
         self.context = context
+        
+        # Check if vector store support is available
+        if not HAS_VECTOR_STORE:
+            self.logger.error("Vector store dependencies not installed. Please install required packages (pymilvus or qdrant-client) based on your configuration.")
+            raise ImportError("Vector store dependencies not installed. Please install the appropriate package for your configured vector store.")
         
         # Load vector store configuration
         vector_store_config = context.state.get("config", {}).get("vector_store", {})
@@ -69,7 +88,7 @@ class VectorStoreAgent(Agent):
         if not self.vector_store.collection_exists(self.default_collection):
             self._create_default_collection()
     
-    def run(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+    def run(self, inputs: Dict[str, Any]) -> HandlerResponse:
         """
         Store or search embeddings in the vector store.
         
@@ -77,20 +96,23 @@ class VectorStoreAgent(Agent):
             inputs: Dictionary with operation type and data
             
         Returns:
-            Dictionary with operation results
+            HandlerResponse with operation results
         """
         # Extract operation type
         operation = inputs.get("operation", "store")
         
         if operation == "store":
-            return self._handle_store(inputs)
+            result = self._handle_store(inputs)
+            return HandlerResponse.success(result) if result.get("status") == "success" else HandlerResponse.error(result.get("message", "Store operation failed"))
         elif operation == "search":
-            return self._handle_search(inputs)
+            result = self._handle_search(inputs)
+            return HandlerResponse.success(result) if result.get("status") == "success" else HandlerResponse.error(result.get("message", "Search operation failed"))
         elif operation == "delete":
-            return self._handle_delete(inputs)
+            result = self._handle_delete(inputs)
+            return HandlerResponse.success(result) if result.get("status") == "success" else HandlerResponse.error(result.get("message", "Delete operation failed"))
         else:
             self.logger.warning(f"Unknown operation: {operation}")
-            return {"status": "error", "message": f"Unknown operation: {operation}"}
+            return HandlerResponse.error(f"Unknown operation: {operation}")
     
     def _handle_store(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -299,3 +321,23 @@ class VectorStoreAgent(Agent):
         """Clean up resources when agent is destroyed."""
         if self.vector_store:
             self.vector_store.disconnect()
+            
+    @classmethod
+    def build_spec(cls, name: str = "vector_store_agent") -> AgentSpec:
+        """
+        Build the agent specification.
+        
+        Args:
+            name: Name of the agent
+            
+        Returns:
+            Agent specification
+        """
+        return AgentSpec(
+            name=name,
+            description="Agent responsible for managing code embeddings in the vector store",
+            agent_class=cls,
+        )
+
+# Create the agent specification
+spec = VectorStoreAgent.build_spec(name="vector_store_agent")

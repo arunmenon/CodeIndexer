@@ -8,9 +8,10 @@ import logging
 import json
 from typing import Dict, Any, List, Optional, Tuple, Union
 
-from google.adk import Agent
-from google.adk.tools.google_api_tool import AgentContext, HandlerResponse
-from google.adk.tools.google_api_tool import ToolResponse
+from google.adk import Agent, AgentSpec
+from google.adk.runtime.context import AgentContext
+from google.adk.runtime.responses import HandlerResponse, ToolResponse, ToolStatus
+
 
 class GraphSearchAgent(Agent):
     """
@@ -21,20 +22,21 @@ class GraphSearchAgent(Agent):
     inheritance, function calls, imports, etc.
     """
     
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, name: str = "graph_search_agent", **kwargs):
         """
         Initialize the graph search agent.
         
         Args:
-            config: Configuration dictionary
+            name: Agent name
+            **kwargs: Additional parameters including config
         """
-        super().__init__()
-        self.config = config
-        self.logger = logging.getLogger("graph_search_agent")
+        super().__init__(name=name)
+        self.config = kwargs.get("config", {})
+        self.logger = logging.getLogger(name)
         
         # Configure defaults
-        self.default_limit = config.get("default_limit", 10)
-        self.neo4j_db = config.get("neo4j_db", "neo4j")
+        self.default_limit = self.config.get("default_limit", 10)
+        self.neo4j_db = self.config.get("neo4j_db", "neo4j")
         
         # Available tools
         self.neo4j_tool = None
@@ -555,3 +557,23 @@ class GraphSearchAgent(Agent):
             return "import"
         else:
             return "general"
+            
+    @classmethod
+    def build_spec(cls, name: str = "graph_search_agent") -> AgentSpec:
+        """
+        Build the agent specification.
+        
+        Args:
+            name: Name of the agent
+            
+        Returns:
+            Agent specification
+        """
+        return AgentSpec(
+            name=name,
+            description="Agent responsible for performing structural code queries using the code knowledge graph",
+            agent_class=cls,
+        )
+
+# Create the agent specification
+spec = GraphSearchAgent.build_spec(name="graph_search_agent")

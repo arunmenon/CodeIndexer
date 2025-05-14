@@ -1,41 +1,38 @@
 """
-Git Ingestion Agent
+Direct Git Ingestion Runner
 
-Agent responsible for monitoring repositories and detecting code changes.
+A standalone implementation of the Git ingestion process without ADK dependencies.
 """
 
 import logging
 import json
 import os
 import time
-from typing import Dict, Any, List, Optional, Set
+from typing import Dict, Any, List, Optional, Set, Tuple
+import hashlib
+from pathlib import Path
 
-from google.adk import Agent
-from google.adk.decorators import init_agent
-from google.adk.api.agent import AgentContext, HandlerResponse
-from google.adk.api.tool import ToolResponse, ToolStatus
+# Import the GitTool from the codebase
+from code_indexer.tools.git_tool import GitTool
 
 
-@init_agent(name="git_ingestion_agent")
-class GitIngestionAgent(Agent):
+class DirectGitIngestionRunner:
     """
-    Agent responsible for monitoring repositories and detecting code changes.
+    DirectGitIngestionRunner is responsible for monitoring repositories and detecting code changes.
     
-    This agent monitors Git repositories, detects code changes since the last
-    indexing, and triggers the indexing pipeline for changed files.
+    This is a direct runner implementation that doesn't depend on ADK but provides
+    the same functionality as the GitIngestionAgent.
     """
     
-    def __init__(self, name: str = "git_ingestion_agent", **kwargs):
+    def __init__(self, config: Dict[str, Any] = None):
         """
-        Initialize the agent.
+        Initialize the runner.
         
         Args:
-            name: Agent name
-            **kwargs: Additional parameters including config
+            config: Configuration dictionary
         """
-        super().__init__(name=name)
-        self.logger = logging.getLogger(name)
-        self.config = kwargs.get("config", {})
+        self.config = config or {}
+        self.logger = logging.getLogger("direct_git_ingestion")
         
         # Configure defaults from config dictionary
         self.repositories = self.config.get('repositories', [])
@@ -46,49 +43,31 @@ class GitIngestionAgent(Agent):
         
         # State
         self.commit_history = {}  # repository_url -> last_indexed_commit
-        self.git_tool = None
-    
-    def init(self, context: AgentContext) -> None:
-        """
-        Initialize the agent with the given context.
         
-        Args:
-            context: Agent context providing access to tools and environment
-        """
-        self.context = context
-        
-        # Get Git tool
-        tool_response = context.get_tool("git_tool")
-        if tool_response.status.is_success():
-            self.git_tool = tool_response.tool
-            self.logger.info("Successfully acquired Git tool")
-        else:
-            self.logger.error("Failed to acquire Git tool: %s", 
-                                tool_response.status.message)
+        # Initialize the GitTool
+        self.git_tool = GitTool(self.config.get('git_tool_config', {}))
         
         # Load commit history
         self._load_commit_history()
     
-    def run(self, input_data: Dict[str, Any]) -> HandlerResponse:
+    def run(self, input_data: Dict[str, Any] = None) -> Dict[str, Any]:
         """
-        Run the git ingestion agent.
+        Run the git ingestion process.
         
         Args:
             input_data: Dictionary containing input parameters
             
         Returns:
-            HandlerResponse with detection results
+            Dictionary with detection results
         """
-        self.logger.info("Starting Git ingestion agent")
+        self.logger.info("Starting direct Git ingestion")
         
-        # Check if Git tool is available
-        if not self.git_tool:
-            return HandlerResponse.error("Git tool not available")
+        input_data = input_data or {}
         
         # Extract parameters from input
         repositories = input_data.get("repositories", self.repositories)
         if not repositories:
-            return HandlerResponse.error("No repositories specified")
+            return {"error": "No repositories specified"}
         
         mode = input_data.get("mode", "incremental")  # incremental or full
         force_reindex = input_data.get("force_reindex", False)
@@ -120,13 +99,13 @@ class GitIngestionAgent(Agent):
         # Save commit history
         self._save_commit_history()
         
-        return HandlerResponse.success({
+        return {
             "results": processing_results,
             "repositories_processed": len(processing_results)
-        })
+        }
     
     def _process_repository(self, repo_url: str, branch: str, repo_name: str,
-                          mode: str, force_reindex: bool) -> Dict[str, Any]:
+                         mode: str, force_reindex: bool) -> Dict[str, Any]:
         """
         Process a single repository.
         
@@ -207,26 +186,26 @@ class GitIngestionAgent(Agent):
         
         # Process files in batches
         file_batches = self._create_file_batches(indexable_files)
-        files_processed = 0
         
-        for batch_index, file_batch in enumerate(file_batches):
-            self.logger.info(f"Processing batch {batch_index + 1}/{len(file_batches)}")
-            
-            # Process batch of files
-            batch_result = self._process_file_batch(
-                repo_path=repo_path,
-                repo_url=repo_url,
-                repo_name=repo_name,
-                file_batch=file_batch,
-                commit=latest_commit,
-                branch=branch,
-                is_full_indexing=is_full_indexing
-            )
-            
-            if batch_result.get("status") == "success":
-                files_processed += batch_result.get("files_processed", 0)
-            else:
-                self.logger.error(f"Failed to process batch: {batch_result.get('message')}")
+        # Prepare file data for all batches
+        all_file_data = []
+        for batch in file_batches:
+            for file_path in batch:
+                # Get file content
+                content = self.git_tool.get_file_content(repo_path, file_path, latest_commit)
+                if content is None:
+                    self.logger.warning(f"Failed to get content for file {file_path}")
+                    continue
+                
+                # Add file data
+                all_file_data.append({
+                    "path": file_path,
+                    "content": content,
+                    "repository": repo_name,
+                    "url": repo_url,
+                    "commit": latest_commit,
+                    "branch": branch
+                })
         
         return {
             "repository": repo_name,
@@ -235,8 +214,10 @@ class GitIngestionAgent(Agent):
             "indexing_type": "full" if is_full_indexing else "incremental",
             "commit": latest_commit,
             "files_detected": len(indexable_files),
-            "files_processed": files_processed,
-            "message": f"Processed {files_processed} files"
+            "files_processed": len(all_file_data),
+            "message": f"Processed {len(all_file_data)} files",
+            "file_data": all_file_data,  # Return the processed file data for the next step
+            "is_full_indexing": is_full_indexing
         }
     
     def _get_all_files(self, repo_path: str) -> List[str]:
@@ -279,94 +260,6 @@ class GitIngestionAgent(Agent):
             batches.append(files[i:i + self.max_file_batch])
         return batches
     
-    def _process_file_batch(self, repo_path: str, repo_url: str, repo_name: str,
-                          file_batch: List[str], commit: str, branch: str,
-                          is_full_indexing: bool) -> Dict[str, Any]:
-        """
-        Process a batch of files.
-        
-        Args:
-            repo_path: Path to the repository
-            repo_url: Repository URL
-            repo_name: Repository name
-            file_batch: List of file paths to process
-            commit: Commit hash
-            branch: Branch name
-            is_full_indexing: Whether this is a full indexing
-            
-        Returns:
-            Dictionary with processing results
-        """
-        try:
-            # Prepare file data
-            file_data = []
-            
-            for file_path in file_batch:
-                # Get file content
-                content = self.git_tool.get_file_content(repo_path, file_path, commit)
-                if content is None:
-                    self.logger.warning(f"Failed to get content for file {file_path}")
-                    continue
-                
-                # Add file data
-                file_data.append({
-                    "path": file_path,
-                    "content": content,
-                    "repository": repo_name,
-                    "url": repo_url,
-                    "commit": commit,
-                    "branch": branch
-                })
-            
-            # If no files with content, return success
-            if not file_data:
-                return {
-                    "status": "success",
-                    "files_processed": 0,
-                    "message": "No file content to process"
-                }
-            
-            # Send files to code parser agent
-            parser_input = {
-                "files": file_data,
-                "repository": repo_name,
-                "url": repo_url,
-                "commit": commit,
-                "branch": branch,
-                "is_full_indexing": is_full_indexing
-            }
-            
-            # Call code parser agent
-            tool_response = self.context.get_tool("code_parser_agent")
-            if not tool_response.status.is_success():
-                return {
-                    "status": "error",
-                    "message": f"Failed to get code parser agent: {tool_response.status.message}"
-                }
-            
-            parser_agent = tool_response.tool
-            response = parser_agent.run(parser_input)
-            
-            if not isinstance(response, ToolResponse) or not response.status.is_success():
-                return {
-                    "status": "error",
-                    "message": f"Failed to parse files: {response.status.message if isinstance(response, ToolResponse) else 'Unknown error'}"
-                }
-            
-            # Return success
-            return {
-                "status": "success",
-                "files_processed": len(file_data),
-                "message": "Files processed successfully"
-            }
-            
-        except Exception as e:
-            self.logger.error(f"Error processing file batch: {e}")
-            return {
-                "status": "error",
-                "message": f"Error processing file batch: {str(e)}"
-            }
-    
     def _load_commit_history(self) -> None:
         """
         Load commit history from file.
@@ -402,4 +295,3 @@ class GitIngestionAgent(Agent):
             # Sleep until next poll
             self.logger.info(f"Sleeping for {self.polling_interval} seconds")
             time.sleep(self.polling_interval)
-            

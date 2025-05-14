@@ -1,0 +1,14 @@
+# Core dependencies
+gitpython>=3.1.30
+neo4j>=5.8.0
+
+# Tree-sitter for AST extraction
+tree-sitter>=0.20.1
+
+# Optional: Common language grammars for Tree-sitter
+# Note: These will need to be installed and built separately
+# See: https://github.com/tree-sitter/py-tree-sitter#using-the-library
+
+# Utilities
+typing-extensions>=4.5.0
+pyyaml>=6.0

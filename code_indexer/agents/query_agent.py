@@ -8,9 +8,9 @@ import logging
 import json
 from typing import Dict, Any, List, Optional, Tuple
 
-from google.adk import Agent
-from google.adk.tools.google_api_tool import AgentContext, HandlerResponse
-from google.adk.tools.google_api_tool import ToolResponse
+from google.adk import Agent, AgentSpec
+from google.adk.runtime.context import AgentContext
+from google.adk.runtime.responses import HandlerResponse, ToolResponse, ToolStatus
 
 from code_indexer.tools.embedding_tool import EmbeddingTool
 
@@ -24,22 +24,23 @@ class QueryAgent(Agent):
     specialized search agents (vector search, graph search, etc.).
     """
     
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, name: str = "query_agent", **kwargs):
         """
         Initialize the query agent.
         
         Args:
-            config: Configuration dictionary
+            name: Agent name
+            **kwargs: Additional parameters including config
         """
-        super().__init__()
-        self.config = config
-        self.logger = logging.getLogger("query_agent")
+        super().__init__(name=name)
+        self.logger = logging.getLogger(name)
+        self.config = kwargs.get("config", {})
         
-        # Configure defaults
-        self.embedding_dimension = config.get("embedding_dimension", 1536)
-        self.llm_model = config.get("llm_model", "gpt-4")
-        self.multi_query_expansion = config.get("multi_query_expansion", True)
-        self.expansion_count = config.get("expansion_count", 3)
+        # Configure defaults from config
+        self.embedding_dimension = self.config.get('embedding_dimension', 1536)
+        self.llm_model = self.config.get('llm_model', 'gpt-4')
+        self.multi_query_expansion = self.config.get('multi_query_expansion', True)
+        self.expansion_count = self.config.get('expansion_count', 3)
         
         # Available tools
         self.embedding_tool = None
@@ -410,3 +411,23 @@ class QueryAgent(Agent):
                 languages.append(lang)
         
         return languages
+        
+    @classmethod
+    def build_spec(cls, name: str = "query_agent") -> AgentSpec:
+        """
+        Build the agent specification.
+        
+        Args:
+            name: Name of the agent
+            
+        Returns:
+            Agent specification
+        """
+        return AgentSpec(
+            name=name,
+            description="Agent responsible for processing natural language queries about code",
+            agent_class=cls,
+        )
+
+# Create the agent specification
+spec = QueryAgent.build_spec(name="query_agent")

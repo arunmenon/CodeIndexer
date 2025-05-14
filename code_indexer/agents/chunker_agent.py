@@ -9,7 +9,9 @@ import logging
 import uuid
 from typing import Dict, List, Any, Optional, Tuple
 
-from google.adk import Agent, AgentContext
+from google.adk import Agent, AgentSpec
+from google.adk.runtime.context import AgentContext
+from google.adk.runtime.responses import HandlerResponse, ToolResponse, ToolStatus
 from google.adk.agents.llm_agent import BaseTool
 
 from code_indexer.tools.neo4j_tool import Neo4jTool
@@ -24,17 +26,23 @@ class ChunkerAgent(Agent):
     vector embeddings.
     """
     
-    def __init__(self):
-        """Initialize the Chunker Agent."""
-        super().__init__()
-        self.logger = logging.getLogger(__name__)
+    def __init__(self, name: str = "chunker_agent", **kwargs):
+        """
+        Initialize the Chunker Agent.
+        
+        Args:
+            name: Agent name
+            **kwargs: Additional parameters including config
+        """
+        super().__init__(name=name)
+        self.logger = logging.getLogger(name)
         
         # Default chunking configuration
         self.max_chunk_size = 1024  # Maximum token size for a chunk
         self.min_chunk_size = 64    # Minimum token size for a chunk
         self.overlap = 50           # Token overlap between adjacent chunks
     
-    def initialize(self, context: AgentContext) -> None:
+    def init(self, context: AgentContext) -> None:
         """
         Initialize the agent with necessary tools and state.
         
@@ -46,14 +54,14 @@ class ChunkerAgent(Agent):
         # Initialize the Neo4j tool
         self.neo4j_tool = Neo4jTool()
         
-        # Load chunking configuration if provided
-        config = context.state.get("config", {}).get("chunking", {})
-        if config:
-            self.max_chunk_size = config.get("max_size", self.max_chunk_size)
-            self.min_chunk_size = config.get("min_size", self.min_chunk_size)
-            self.overlap = config.get("overlap", self.overlap)
+        # Load chunking configuration if provided in context state
+        chunking_config = context.state.get("config", {}).get("chunking", {})
+        if chunking_config:
+            self.max_chunk_size = chunking_config.get("max_size", self.max_chunk_size)
+            self.min_chunk_size = chunking_config.get("min_size", self.min_chunk_size)
+            self.overlap = chunking_config.get("overlap", self.overlap)
     
-    def run(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+    def run(self, inputs: Dict[str, Any]) -> HandlerResponse:
         """
         Create meaningful code chunks for embedding.
         
@@ -61,7 +69,7 @@ class ChunkerAgent(Agent):
             inputs: Dictionary with file paths or entity IDs to chunk
             
         Returns:
-            Dictionary with chunks and their metadata
+            HandlerResponse with chunks and their metadata
         """
         # Extract inputs
         file_paths = inputs.get("file_paths", [])
@@ -93,10 +101,10 @@ class ChunkerAgent(Agent):
         self.logger.info(f"Created {len(all_chunks)} chunks from {len(file_paths)} files "
                         f"and {len(entity_ids)} entities")
         
-        return {
+        return HandlerResponse.success({
             "chunks": all_chunks,
             "count": len(all_chunks)
-        }
+        })
     
     def _chunk_file(self, file_path: str, repo_path: str) -> List[Dict[str, Any]]:
         """
@@ -665,3 +673,23 @@ class ChunkerAgent(Agent):
         }
         
         return ext_map.get(ext.lower(), "unknown")
+        
+    @classmethod
+    def build_spec(cls, name: str = "chunker_agent") -> AgentSpec:
+        """
+        Build the agent specification.
+        
+        Args:
+            name: Name of the agent
+            
+        Returns:
+            Agent specification
+        """
+        return AgentSpec(
+            name=name,
+            description="Agent responsible for dividing code into semantic chunks for embedding",
+            agent_class=cls,
+        )
+
+# Create the agent specification
+spec = ChunkerAgent.build_spec(name="chunker_agent")

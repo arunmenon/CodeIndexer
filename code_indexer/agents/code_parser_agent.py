@@ -9,10 +9,12 @@ import os
 from typing import Dict, Any, List, Optional, Tuple
 
 from google.adk import Agent
-from google.adk.tools.google_api_tool import AgentContext, HandlerResponse
-from google.adk.tools.google_api_tool import ToolResponse
+from google.adk.decorators import init_agent
+from google.adk.api.agent import AgentContext, HandlerResponse
+from google.adk.api.tool import ToolResponse, ToolStatus
 
 
+@init_agent(name="code_parser_agent")
 class CodeParserAgent(Agent):
     """
     Agent responsible for parsing source files into AST structures.
@@ -22,20 +24,21 @@ class CodeParserAgent(Agent):
     the graph builder agent.
     """
     
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, name: str = "code_parser_agent", **kwargs):
         """
         Initialize the code parser agent.
         
         Args:
-            config: Configuration dictionary
+            name: Agent name
+            **kwargs: Additional parameters including config
         """
-        super().__init__()
-        self.config = config
-        self.logger = logging.getLogger("code_parser_agent")
+        super().__init__(name=name)
+        self.config = kwargs.get("config", {})
+        self.logger = logging.getLogger(name)
         
         # Configure defaults
-        self.max_file_size = config.get("max_file_size", 1024 * 1024)  # 1MB
-        self.batch_size = config.get("batch_size", 10)
+        self.max_file_size = self.config.get("max_file_size", 1024 * 1024)  # 1MB
+        self.batch_size = self.config.get("batch_size", 10)
         
         # State
         self.ast_extractor = None
@@ -269,3 +272,4 @@ class CodeParserAgent(Agent):
                 "status": "error",
                 "message": f"Failed to send to graph builder: {str(e)}"
             }
+            

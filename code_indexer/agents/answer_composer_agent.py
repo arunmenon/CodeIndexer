@@ -8,9 +8,10 @@ import logging
 import json
 from typing import Dict, Any, List, Optional, Tuple, Union
 
-from google.adk import Agent
-from google.adk.tools.google_api_tool import AgentContext, HandlerResponse
-from google.adk.tools.google_api_tool import ToolResponse
+from google.adk import Agent, AgentSpec
+from google.adk.runtime.context import AgentContext
+from google.adk.runtime.responses import HandlerResponse, ToolResponse, ToolStatus
+
 
 class AnswerComposerAgent(Agent):
     """
@@ -21,22 +22,23 @@ class AnswerComposerAgent(Agent):
     to the user's original query.
     """
     
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, name: str = "answer_composer_agent", **kwargs):
         """
         Initialize the answer composer agent.
         
         Args:
-            config: Configuration dictionary
+            name: Agent name
+            **kwargs: Additional parameters including config
         """
-        super().__init__()
-        self.config = config
-        self.logger = logging.getLogger("answer_composer_agent")
+        super().__init__(name=name)
+        self.config = kwargs.get("config", {})
+        self.logger = logging.getLogger(name)
         
         # Configure defaults
-        self.max_code_snippets = config.get("max_code_snippets", 3)
-        self.include_explanations = config.get("include_explanations", True)
-        self.llm_model = config.get("llm_model", "gpt-4")
-        self.answer_style = config.get("answer_style", "concise")  # concise, detailed
+        self.max_code_snippets = self.config.get("max_code_snippets", 3)
+        self.include_explanations = self.config.get("include_explanations", True)
+        self.llm_model = self.config.get("llm_model", "gpt-4")
+        self.answer_style = self.config.get("answer_style", "concise")  # concise, detailed
         
         # Available tools
         self.embedding_tool = None
@@ -617,3 +619,23 @@ class AnswerComposerAgent(Agent):
                 counts["sources"][source] = counts["sources"].get(source, 0) + 1
         
         return counts
+        
+    @classmethod
+    def build_spec(cls, name: str = "answer_composer_agent") -> AgentSpec:
+        """
+        Build the agent specification.
+        
+        Args:
+            name: Name of the agent
+            
+        Returns:
+            Agent specification
+        """
+        return AgentSpec(
+            name=name,
+            description="Agent responsible for synthesizing search results into coherent answers",
+            agent_class=cls,
+        )
+
+# Create the agent specification
+spec = AnswerComposerAgent.build_spec(name="answer_composer_agent")

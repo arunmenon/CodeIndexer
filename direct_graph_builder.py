@@ -1,7 +1,7 @@
 """
-Graph Builder Agent
+Direct Graph Builder Runner
 
-This agent builds a knowledge graph from code ASTs using Neo4j.
+A standalone implementation of the graph builder process without ADK dependencies.
 """
 
 import os
@@ -10,43 +10,314 @@ import time
 import hashlib
 from typing import Dict, List, Any, Optional, Tuple, Union
 
-from google.adk import Agent
-from google.adk.decorators import init_agent
-from google.adk.api.agent import AgentContext, HandlerResponse
-from google.adk.api.tool import ToolResponse, ToolStatus
-
-from code_indexer.tools.neo4j_tool import Neo4jTool
+# Import Neo4j wrapper and utility functions
 from code_indexer.utils.ast_utils import find_entity_in_ast, get_function_info, get_class_info
 
 
-@init_agent(name="graph_builder_agent")
-class GraphBuilderAgent(Agent):
+class Neo4jToolWrapper:
     """
-    Agent responsible for building and updating the code knowledge graph.
+    A wrapper for the Neo4jTool that removes ADK dependencies.
     
-    This agent takes AST structures from the CodeParserAgent and creates
-    a graph representation in Neo4j, capturing code entities and their relationships.
+    This wrapper provides the same functionality as the Neo4jTool but without
+    any ADK dependencies. It's a direct implementation using the Neo4j Python driver.
     """
     
-    def __init__(self, name: str = "graph_builder_agent", **kwargs):
+    def __init__(self, config: Dict[str, Any] = None):
         """
-        Initialize the Graph Builder Agent.
+        Initialize the Neo4j tool wrapper.
         
         Args:
-            name: Agent name
-            **kwargs: Additional parameters including config
+            config: Configuration dictionary
         """
-        super().__init__(name=name)
-        self.config = kwargs.get("config", {})
-        self.logger = logging.getLogger(name)
+        self.config = config or {}
+        self.logger = logging.getLogger("direct_neo4j_tool")
+        
+        # Import Neo4j conditionally to handle environments without it
+        try:
+            from neo4j import GraphDatabase, basic_auth
+            self.has_neo4j = True
+        except ImportError:
+            self.has_neo4j = False
+            self.logger.warning("Neo4j driver not installed. Graph functionality will not work.")
+            return
+        
+        # Connection settings from environment variables or config
+        self.uri = self.config.get("NEO4J_URI", os.environ.get("NEO4J_URI", "bolt://localhost:7687"))
+        self.user = self.config.get("NEO4J_USER", os.environ.get("NEO4J_USER", "neo4j"))
+        self.password = self.config.get("NEO4J_PASSWORD", os.environ.get("NEO4J_PASSWORD", "password"))
+        self.database = self.config.get("NEO4J_DATABASE", os.environ.get("NEO4J_DATABASE", "neo4j"))
+        
+        # Create driver attribute
+        self.driver = None
+        
+        # Connect to Neo4j
+        self.connect()
+    
+    def connect(self) -> bool:
+        """
+        Connect to Neo4j database.
+        
+        Returns:
+            True if connection succeeded, False otherwise
+        """
+        if not self.has_neo4j:
+            self.logger.error("Neo4j driver not installed")
+            return False
+        
+        try:
+            from neo4j import GraphDatabase, basic_auth
+            self.driver = GraphDatabase.driver(
+                self.uri, 
+                auth=basic_auth(self.user, self.password)
+            )
+            # Test connection
+            with self.driver.session(database=self.database) as session:
+                session.run("RETURN 1")
+            
+            self.logger.info(f"Connected to Neo4j at {self.uri}")
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to connect to Neo4j: {e}")
+            self.driver = None
+            return False
+    
+    def close(self) -> None:
+        """Close the Neo4j connection."""
+        if self.driver:
+            self.driver.close()
+            self.driver = None
+    
+    def execute_cypher(self, query: str, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """
+        Execute a custom Cypher query.
+        
+        Args:
+            query: Cypher query string
+            params: Query parameters
+            
+        Returns:
+            List of results as dictionaries
+        """
+        if not self.driver:
+            self.connect()
+        
+        try:
+            with self.driver.session(database=self.database) as session:
+                result = session.run(query, params or {})
+                return [dict(record) for record in result]
+        except Exception as e:
+            self.logger.error(f"Error executing Cypher query: {e}")
+            raise
+    
+    def create_file_node(self, file_id: str, path: str, language: str, 
+                        repo_path: Optional[str] = None) -> str:
+        """
+        Create or update a File node in the graph.
+        
+        Args:
+            file_id: Unique identifier for the file
+            path: Path to the file within the repository
+            language: Programming language of the file
+            repo_path: Path to the repository (optional)
+            
+        Returns:
+            ID of the created/updated node
+        """
+        if not self.driver:
+            self.connect()
+        
+        query = """
+        MERGE (f:File {id: $file_id})
+        SET f.path = $path,
+            f.language = $language,
+            f.repo_path = $repo_path,
+            f.last_updated = timestamp()
+        RETURN f.id
+        """
+        
+        with self.driver.session(database=self.database) as session:
+            result = session.run(
+                query,
+                file_id=file_id,
+                path=path,
+                language=language,
+                repo_path=repo_path
+            )
+            return result.single()[0]
+    
+    def create_class_node(self, class_id: str, name: str, file_id: str,
+                         start_line: int, end_line: int, 
+                         docstring: Optional[str] = None) -> str:
+        """
+        Create or update a Class node in the graph.
+        
+        Args:
+            class_id: Unique identifier for the class
+            name: Name of the class
+            file_id: ID of the file containing the class
+            start_line: Starting line number
+            end_line: Ending line number
+            docstring: Class documentation string (optional)
+            
+        Returns:
+            ID of the created/updated node
+        """
+        if not self.driver:
+            self.connect()
+        
+        query = """
+        MERGE (c:Class {id: $class_id})
+        SET c.name = $name,
+            c.file_id = $file_id,
+            c.start_line = $start_line,
+            c.end_line = $end_line,
+            c.docstring = $docstring,
+            c.last_updated = timestamp()
+        RETURN c.id
+        """
+        
+        with self.driver.session(database=self.database) as session:
+            result = session.run(
+                query,
+                class_id=class_id,
+                name=name,
+                file_id=file_id,
+                start_line=start_line,
+                end_line=end_line,
+                docstring=docstring
+            )
+            return result.single()[0]
+    
+    def create_function_node(self, function_id: str, name: str, file_id: str,
+                           start_line: int, end_line: int, params: List[str],
+                           docstring: Optional[str] = None, 
+                           class_id: Optional[str] = None,
+                           is_method: bool = False) -> str:
+        """
+        Create or update a Function node in the graph.
+        
+        Args:
+            function_id: Unique identifier for the function
+            name: Name of the function
+            file_id: ID of the file containing the function
+            start_line: Starting line number
+            end_line: Ending line number
+            params: List of parameter names
+            docstring: Function documentation string (optional)
+            class_id: ID of the class if it's a method (optional)
+            is_method: True if this is a class method
+            
+        Returns:
+            ID of the created/updated node
+        """
+        if not self.driver:
+            self.connect()
+        
+        query = """
+        MERGE (f:Function {id: $function_id})
+        SET f.name = $name,
+            f.file_id = $file_id,
+            f.class_id = $class_id,
+            f.start_line = $start_line,
+            f.end_line = $end_line,
+            f.params = $params,
+            f.docstring = $docstring,
+            f.is_method = $is_method,
+            f.last_updated = timestamp()
+        RETURN f.id
+        """
+        
+        with self.driver.session(database=self.database) as session:
+            result = session.run(
+                query,
+                function_id=function_id,
+                name=name,
+                file_id=file_id,
+                class_id=class_id,
+                start_line=start_line,
+                end_line=end_line,
+                params=params,
+                docstring=docstring,
+                is_method=is_method
+            )
+            return result.single()[0]
+    
+    def create_relationship(self, from_id: str, to_id: str, rel_type: str,
+                          properties: Optional[Dict[str, Any]] = None) -> bool:
+        """
+        Create a relationship between two nodes.
+        
+        Args:
+            from_id: ID of the source node
+            to_id: ID of the target node
+            rel_type: Type of relationship (e.g., "CONTAINS", "CALLS")
+            properties: Optional properties for the relationship
+            
+        Returns:
+            True if relationship was created, False otherwise
+        """
+        if not self.driver:
+            self.connect()
+        
+        query = f"""
+        MATCH (from) WHERE from.id = $from_id
+        MATCH (to) WHERE to.id = $to_id
+        MERGE (from)-[r:{rel_type}]->(to)
+        """
+        
+        # Add property setting if provided
+        if properties:
+            props_str = ", ".join(f"r.{k} = ${k}" for k in properties.keys())
+            query += f" SET {props_str}"
+        
+        try:
+            with self.driver.session(database=self.database) as session:
+                session.run(
+                    query,
+                    from_id=from_id,
+                    to_id=to_id,
+                    **properties or {}
+                )
+            return True
+        except Exception as e:
+            self.logger.error(f"Error creating relationship: {e}")
+            return False
+
+
+class DirectGraphBuilderRunner:
+    """
+    DirectGraphBuilderRunner is responsible for building and updating the code knowledge graph.
+    
+    This is a direct runner implementation that doesn't depend on ADK but provides
+    the same functionality as the GraphBuilderAgent.
+    """
+    
+    def __init__(self, config: Dict[str, Any] = None):
+        """
+        Initialize the runner.
+        
+        Args:
+            config: Configuration dictionary
+        """
+        self.config = config or {}
+        self.logger = logging.getLogger("direct_graph_builder")
         
         # Configure defaults
         self.use_imports = self.config.get("use_imports", True)
         self.use_inheritance = self.config.get("use_inheritance", True)
         self.detect_calls = self.config.get("detect_calls", True)
         
-        # State
-        self.neo4j_tool = None
+        # Initialize Neo4j tool wrapper
+        self.neo4j_tool = Neo4jToolWrapper(self.config.get("neo4j_config", {}))
+        
+        # Setup Neo4j connection and schema
+        if self.neo4j_tool.connect():
+            self._setup_schema()
+            self.logger.info("Successfully connected to Neo4j")
+        else:
+            self.logger.error("Failed to connect to Neo4j database")
+        
+        # Graph statistics
         self.graph_stats = {
             "files": 0,
             "classes": 0,
@@ -54,30 +325,7 @@ class GraphBuilderAgent(Agent):
             "relationships": 0
         }
     
-    def init(self, context: AgentContext) -> None:
-        """
-        Initialize the agent with the given context.
-        
-        Args:
-            context: Agent context providing access to tools and environment
-        """
-        self.context = context
-        
-        # Get Neo4j tool
-        self.neo4j_tool = Neo4jTool()
-        
-        # Setup Neo4j connection
-        try:
-            # Check if we can connect and create constraints if needed
-            if self.neo4j_tool.connect():
-                self._setup_schema()
-                self.logger.info("Successfully connected to Neo4j")
-            else:
-                self.logger.error("Failed to connect to Neo4j database")
-        except Exception as e:
-            self.logger.error(f"Error initializing Neo4j: {e}")
-    
-    def run(self, input_data: Dict[str, Any]) -> HandlerResponse:
+    def run(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Build the knowledge graph from AST structures.
         
@@ -85,14 +333,14 @@ class GraphBuilderAgent(Agent):
             input_data: Dictionary containing AST structures
             
         Returns:
-            HandlerResponse with graph building results
+            Dictionary with graph building results
         """
-        self.logger.info("Starting graph builder agent")
+        self.logger.info("Starting direct graph builder")
         
         # Extract ASTs from input
         asts = input_data.get("asts", [])
         if not asts:
-            return HandlerResponse.error("No ASTs to process")
+            return {"error": "No ASTs to process"}
         
         repository = input_data.get("repository", "")
         repository_url = input_data.get("repository_url", "")
@@ -137,13 +385,13 @@ class GraphBuilderAgent(Agent):
                     "error": str(e)
                 })
         
-        return HandlerResponse.success({
+        return {
             "repository": repository,
             "files_processed": len(processed_files),
             "files_failed": len(failed_files),
             "graph_stats": self.graph_stats,
             "failed_files": failed_files[:10]  # Include only the first 10 failed files
-        })
+        }
     
     def _process_ast(self, ast_data: Dict[str, Any], repository: str,
                    repository_url: str, commit: str, branch: str) -> Dict[str, Any]:
@@ -749,4 +997,3 @@ class GraphBuilderAgent(Agent):
                 self.logger.error(f"Error creating schema: {e}")
         
         self.logger.info("Neo4j schema setup complete")
-        
