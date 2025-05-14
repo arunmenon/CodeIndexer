@@ -14,8 +14,14 @@ from google.adk.runtime.context import AgentContext
 from google.adk.runtime.responses import HandlerResponse, ToolResponse, ToolStatus
 from google.adk.agents.llm_agent import BaseTool
 
-from code_indexer.tools.vector_store_factory import VectorStoreFactory
-from code_indexer.tools.vector_store_interface import VectorStoreInterface
+# Import vector store components with proper error handling
+try:
+    from code_indexer.tools.vector_store_factory import VectorStoreFactory
+    from code_indexer.tools.vector_store_interface import VectorStoreInterface
+    HAS_VECTOR_STORE = True
+except ImportError as e:
+    HAS_VECTOR_STORE = False
+    logging.warning(f"Vector store support not fully available: {e}. Install required dependencies (pymilvus or qdrant-client) based on your configuration.")
 
 
 class VectorStoreAgent(Agent):
@@ -51,6 +57,11 @@ class VectorStoreAgent(Agent):
             context: The agent context
         """
         self.context = context
+        
+        # Check if vector store support is available
+        if not HAS_VECTOR_STORE:
+            self.logger.error("Vector store dependencies not installed. Please install required packages (pymilvus or qdrant-client) based on your configuration.")
+            raise ImportError("Vector store dependencies not installed. Please install the appropriate package for your configured vector store.")
         
         # Load vector store configuration
         vector_store_config = context.state.get("config", {}).get("vector_store", {})

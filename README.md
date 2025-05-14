@@ -83,19 +83,22 @@ python -m code_indexer.ingestion.setup_tree_sitter --languages python,javascript
 
 ```bash
 # Process a repository
-codeindexer-ingest --repo https://github.com/example/repo --output-dir ./results
+python -m code_indexer.ingestion.run_enhanced_graph_builder --repo-path /path/to/repo --output-dir ./results
 
 # Run incremental indexing
-codeindexer-ingest --repo https://github.com/example/repo --mode incremental
+python -m code_indexer.ingestion.run_enhanced_graph_builder --repo-path /path/to/repo
 
 # Full reindexing
-codeindexer-ingest --repo https://github.com/example/repo --mode full
+python -m code_indexer.ingestion.run_enhanced_graph_builder --repo-path /path/to/repo --full-indexing
 
-# Run specific stage
-codeindexer-ingest --repo https://github.com/example/repo --step graph
+# Configure resolution strategy based on repository size
+python -m code_indexer.ingestion.run_enhanced_graph_builder --repo-path /path/to/repo --resolution-strategy join  # Default, for repos with <2M definitions
+python -m code_indexer.ingestion.run_enhanced_graph_builder --repo-path /path/to/repo --resolution-strategy hashmap  # For repos with 2-5M definitions
+python -m code_indexer.ingestion.run_enhanced_graph_builder --repo-path /path/to/repo --resolution-strategy sharded  # For massive repos >5M definitions
 
-# Detect dead code during ingestion
-codeindexer-ingest --repo https://github.com/example/repo --detect-dead-code
+# Control when resolution happens
+python -m code_indexer.ingestion.run_enhanced_graph_builder --repo-path /path/to/repo --immediate-resolution  # Resolve during ingestion
+python -m code_indexer.ingestion.run_enhanced_graph_builder --repo-path /path/to/repo  # Bulk resolution at end
 ```
 
 ### Running the Enhanced Graph Builder

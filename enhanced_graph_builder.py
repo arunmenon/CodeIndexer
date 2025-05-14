@@ -198,6 +198,7 @@ class EnhancedNeo4jTool(Neo4jToolWrapper):
             "CREATE CONSTRAINT IF NOT EXISTS FOR (n:Function) REQUIRE n.id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (n:CallSite) REQUIRE n.id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (n:ImportSite) REQUIRE n.id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:SymIndex) REQUIRE n.id IS UNIQUE",
             
             # Composite indices for efficient resolution
             "CREATE INDEX IF NOT EXISTS FOR (f:Function) ON (f.name, f.file_id)",
@@ -206,7 +207,10 @@ class EnhancedNeo4jTool(Neo4jToolWrapper):
             
             # Indices for call site and import site nodes
             "CREATE INDEX IF NOT EXISTS FOR (c:CallSite) ON (c.call_name, c.call_module)",
-            "CREATE INDEX IF NOT EXISTS FOR (i:ImportSite) ON (i.import_name, i.module_name)"
+            "CREATE INDEX IF NOT EXISTS FOR (i:ImportSite) ON (i.import_name, i.module_name)",
+            
+            # Index for SymIndex nodes (for the sharded strategy)
+            "CREATE INDEX IF NOT EXISTS FOR (s:SymIndex) ON (s.repo, s.name)"
         ]
         
         for command in schema_commands:
@@ -298,9 +302,11 @@ class EnhancedGraphBuilderRunner(DirectGraphBuilderRunner):
             call_info = self._extract_call_info(func)
             
             if call_info:
-                # Generate a unique ID for the call site
+                # Generate a unique ID for the call site that includes repository information
+                # This ensures uniqueness across repositories even if file paths are similar
+                repo_identifier = ast_data.get("repository", "") or repository or ""
                 call_id = hashlib.md5(
-                    f"{file_id}:{start_line}:{start_col}:{call_info['name']}".encode()
+                    f"{repo_identifier}:{file_id}:{start_line}:{start_col}:{call_info['name']}".encode()
                 ).hexdigest()
                 
                 # Create call site node
@@ -416,9 +422,11 @@ class EnhancedGraphBuilderRunner(DirectGraphBuilderRunner):
                 asname = alias.get("asname", "")
                 
                 if name:
-                    # Generate a unique ID for the import site
+                    # Generate a unique ID for the import site that includes repository information
+                    # This ensures uniqueness across repositories even if file paths are similar
+                    repo_identifier = ast_data.get("repository", "") or repository or ""
                     import_id = hashlib.md5(
-                        f"{file_id}:import:{start_line}:{name}".encode()
+                        f"{repo_identifier}:{file_id}:import:{start_line}:{name}".encode()
                     ).hexdigest()
                     
                     # Create import site node
@@ -462,9 +470,11 @@ class EnhancedGraphBuilderRunner(DirectGraphBuilderRunner):
                 asname = alias.get("asname", "")
                 
                 if name and module:
-                    # Generate a unique ID for the import site
+                    # Generate a unique ID for the import site that includes repository information
+                    # This ensures uniqueness across repositories even if file paths are similar
+                    repo_identifier = ast_data.get("repository", "") or repository or ""
                     import_id = hashlib.md5(
-                        f"{file_id}:import_from:{start_line}:{module}.{name}".encode()
+                        f"{repo_identifier}:{file_id}:import_from:{start_line}:{module}.{name}".encode()
                     ).hexdigest()
                     
                     # Create import site node
@@ -636,8 +646,8 @@ class EnhancedGraphBuilderRunner(DirectGraphBuilderRunner):
         Resolve a call site using label-sharded indices.
         
         This approach is best for massive repositories with >5M definitions.
-        It uses specialized labels like FunctionA, FunctionB, etc. based on
-        name prefixes to partition the search space.
+        It uses SymIndex nodes with raw node IDs to enable fast lookups
+        without loading full Function/Class nodes.
         
         Args:
             call_id: ID of the call site
@@ -647,56 +657,509 @@ class EnhancedGraphBuilderRunner(DirectGraphBuilderRunner):
         Returns:
             True if resolved, False otherwise
         """
-        # Implementation would use specialized labels and indices
-        # For now, delegate to the join approach
-        return self._resolve_call_site_join(call_id, call_info, file_id)
+        call_name = call_info["name"]
+        is_attribute = call_info.get("is_attribute", False)
+        module_name = call_info.get("module")
+        
+        # First, ensure SymIndex nodes exist for all relevant definitions
+        # This is a one-time operation per repository update
+        self._ensure_sym_index_nodes()
+        
+        # Now use the SymIndex nodes for resolution
+        if is_attribute and module_name:
+            # Method call with object/module
+            query = """
+            MATCH (cs:CallSite {id: $call_id})
+            MATCH (si:SymIndex {name: $call_name})
+            WHERE si.class_name = $module_name
+            MATCH (f:Function) WHERE id(f) = si.target_id
+            // Create RESOLVES_TO relationship
+            MERGE (cs)-[r:RESOLVES_TO]->(f)
+            SET r.score = 1.0, r.timestamp = timestamp()
+            RETURN count(r) as rel_count
+            """
+            
+            result = self.neo4j_tool.execute_cypher(query, {
+                "call_id": call_id,
+                "call_name": call_name,
+                "module_name": module_name
+            })
+            
+            if result and result[0]["rel_count"] > 0:
+                self.graph_stats["resolved_calls"] += 1
+                return True
+                
+            # Try resolving as a module-qualified function
+            query = """
+            MATCH (cs:CallSite {id: $call_id})
+            MATCH (si:SymIndex {name: $call_name, module: $module_name})
+            MATCH (f:Function) WHERE id(f) = si.target_id
+            // Create RESOLVES_TO relationship
+            MERGE (cs)-[r:RESOLVES_TO]->(f)
+            SET r.score = 0.8, r.timestamp = timestamp()
+            RETURN count(r) as rel_count
+            """
+            
+            result = self.neo4j_tool.execute_cypher(query, {
+                "call_id": call_id,
+                "call_name": call_name,
+                "module_name": module_name
+            })
+            
+            if result and result[0]["rel_count"] > 0:
+                self.graph_stats["resolved_calls"] += 1
+                return True
+        else:
+            # Direct function call - use SymIndex for lookup
+            query = """
+            MATCH (cs:CallSite {id: $call_id})
+            MATCH (si:SymIndex {name: $call_name})
+            WITH cs, si, 
+                 CASE WHEN si.file_id = $file_id THEN 1.0 ELSE 0.7 END as score
+            ORDER BY score DESC
+            LIMIT 1
+            MATCH (f:Function) WHERE id(f) = si.target_id
+            // Create RESOLVES_TO relationship
+            MERGE (cs)-[r:RESOLVES_TO]->(f)
+            SET r.score = score, r.timestamp = timestamp()
+            RETURN count(r) as rel_count
+            """
+            
+            result = self.neo4j_tool.execute_cypher(query, {
+                "call_id": call_id,
+                "call_name": call_name,
+                "file_id": file_id
+            })
+            
+            if result and result[0]["rel_count"] > 0:
+                self.graph_stats["resolved_calls"] += 1
+                return True
+        
+        return False
+    
+    def _ensure_sym_index_nodes(self) -> None:
+        """
+        Ensure SymIndex nodes exist for all function and class definitions.
+        
+        This is typically run once after ingestion but before resolution.
+        The SymIndex nodes serve as a lightweight look-up index for fast
+        resolution in massive repositories.
+        """
+        # Skip if index was already created in this session
+        if getattr(self, "_sym_index_created", False):
+            return
+            
+        self.logger.info("Creating SymIndex nodes for efficient resolution...")
+        
+        # Create SymIndex nodes for all functions
+        function_index_query = """
+        MATCH (f:Function)
+        WHERE NOT EXISTS {
+            MATCH (si:SymIndex {target_id: id(f)})
+        }
+        WITH f
+        MERGE (si:SymIndex {id: 'sym_' + f.id})
+        SET si.name = f.name,
+            si.target_id = id(f),
+            si.entity_type = 'Function',
+            si.file_id = f.file_id,
+            si.class_id = f.class_id,
+            si.is_method = f.is_method
+        WITH count(*) AS indexed
+        RETURN indexed
+        """
+        
+        result = self.neo4j_tool.execute_cypher(function_index_query)
+        indexed_functions = result[0]["indexed"] if result else 0
+        
+        # Create SymIndex nodes for all classes
+        class_index_query = """
+        MATCH (c:Class)
+        WHERE NOT EXISTS {
+            MATCH (si:SymIndex {target_id: id(c)})
+        }
+        WITH c
+        MERGE (si:SymIndex {id: 'sym_' + c.id})
+        SET si.name = c.name,
+            si.target_id = id(c),
+            si.entity_type = 'Class',
+            si.file_id = c.file_id
+        WITH count(*) AS indexed
+        RETURN indexed
+        """
+        
+        result = self.neo4j_tool.execute_cypher(class_index_query)
+        indexed_classes = result[0]["indexed"] if result else 0
+        
+        # For method calls, we need to associate methods with their classes
+        method_class_index_query = """
+        MATCH (c:Class)-[:CONTAINS]->(f:Function)
+        MATCH (si:SymIndex {target_id: id(f)})
+        SET si.class_name = c.name
+        WITH count(*) AS indexed
+        RETURN indexed
+        """
+        
+        result = self.neo4j_tool.execute_cypher(method_class_index_query)
+        indexed_methods = result[0]["indexed"] if result else 0
+        
+        self.logger.info(f"Created SymIndex for {indexed_functions} functions, {indexed_classes} classes, and updated {indexed_methods} methods")
+        
+        # Mark as created for this session
+        self._sym_index_created = True
     
     def _resolve_all_placeholders(self) -> Dict[str, int]:
         """
         Perform a bulk resolution of all unresolved placeholders.
         
+        This method uses the configured resolution strategy to resolve
+        all placeholder nodes that have not yet been resolved to their targets.
+        
         Returns:
             Dictionary with resolution statistics
         """
-        # Resolve call sites
-        call_site_query = """
-        MATCH (cs:CallSite)
-        WHERE NOT EXISTS((cs)-[:RESOLVES_TO]->())
-        WITH cs
-        MATCH (f:Function {name: cs.call_name})
-        WITH cs, f, 
-             CASE WHEN f.file_id = cs.caller_file_id THEN 1.0 ELSE 0.7 END as score
-        ORDER BY score DESC
-        LIMIT 1
-        MERGE (cs)-[r:RESOLVES_TO]->(f)
-        SET r.score = score, r.timestamp = timestamp()
-        RETURN count(r) as resolved_calls
-        """
+        self.logger.info(f"Performing bulk resolution using strategy: {self.resolution_strategy}")
         
-        call_result = self.neo4j_tool.execute_cypher(call_site_query)
-        resolved_calls = call_result[0]["resolved_calls"] if call_result else 0
+        # Choose the appropriate resolution strategy
+        if self.resolution_strategy == "hashmap":
+            return self._resolve_all_placeholders_hashmap()
+        elif self.resolution_strategy == "sharded":
+            return self._resolve_all_placeholders_sharded()
+        else:
+            # Default to pure Cypher join strategy
+            return self._resolve_all_placeholders_join()
+    
+    def _resolve_all_placeholders_join(self) -> Dict[str, int]:
+        """
+        Perform bulk resolution using pure Cypher join approach.
+        
+        Suitable for repositories with up to ~2M definitions.
+        
+        Returns:
+            Dictionary with resolution statistics
+        """
+        # Process in batches to avoid long-running transactions
+        batch_size = 5000
+        total_resolved_calls = 0
+        total_resolved_imports = 0
+        
+        # Resolve call sites
+        while True:
+            call_site_query = f"""
+            MATCH (cs:CallSite)
+            WHERE NOT EXISTS((cs)-[:RESOLVES_TO]->())
+            WITH cs LIMIT {batch_size}
+            MATCH (f:Function {{name: cs.call_name}})
+            WITH cs, f, 
+                 CASE WHEN f.file_id = cs.caller_file_id THEN 1.0 ELSE 0.7 END as score
+            ORDER BY cs.id, score DESC
+            WITH cs, collect({{f: f, score: score}})[0] as best_match
+            MERGE (cs)-[r:RESOLVES_TO]->(best_match.f)
+            SET r.score = best_match.score, r.timestamp = timestamp()
+            RETURN count(r) as resolved_calls
+            """
+            
+            call_result = self.neo4j_tool.execute_cypher(call_site_query)
+            resolved_calls = call_result[0]["resolved_calls"] if call_result else 0
+            total_resolved_calls += resolved_calls
+            
+            if resolved_calls == 0:
+                break
+                
+            self.logger.info(f"Resolved {resolved_calls} call sites in this batch")
         
         # Resolve import sites
-        import_site_query = """
-        MATCH (is:ImportSite)
-        WHERE NOT EXISTS((is)-[:RESOLVES_TO]->())
-        WITH is
-        MATCH (c:Class {name: is.import_name})
-        MERGE (is)-[r:RESOLVES_TO]->(c)
-        SET r.score = 1.0, r.timestamp = timestamp()
-        RETURN count(r) as resolved_imports
-        """
-        
-        import_result = self.neo4j_tool.execute_cypher(import_site_query)
-        resolved_imports = import_result[0]["resolved_imports"] if import_result else 0
+        while True:
+            import_site_query = f"""
+            MATCH (is:ImportSite)
+            WHERE NOT EXISTS((is)-[:RESOLVES_TO]->())
+            WITH is LIMIT {batch_size}
+            OPTIONAL MATCH (c:Class {{name: is.import_name}})
+            WITH is, c
+            WHERE c IS NOT NULL
+            MERGE (is)-[r:RESOLVES_TO]->(c)
+            SET r.score = 1.0, r.timestamp = timestamp()
+            RETURN count(r) as resolved_imports
+            """
+            
+            import_result = self.neo4j_tool.execute_cypher(import_site_query)
+            resolved_imports = import_result[0]["resolved_imports"] if import_result else 0
+            total_resolved_imports += resolved_imports
+            
+            if resolved_imports == 0:
+                break
+                
+            self.logger.info(f"Resolved {resolved_imports} import sites in this batch")
         
         # Update graph statistics
-        self.graph_stats["resolved_calls"] += resolved_calls
-        self.graph_stats["resolved_imports"] += resolved_imports
+        self.graph_stats["resolved_calls"] += total_resolved_calls
+        self.graph_stats["resolved_imports"] += total_resolved_imports
         
         return {
-            "resolved_calls": resolved_calls,
-            "resolved_imports": resolved_imports
+            "resolved_calls": total_resolved_calls,
+            "resolved_imports": total_resolved_imports
+        }
+    
+    def _resolve_all_placeholders_hashmap(self) -> Dict[str, int]:
+        """
+        Perform bulk resolution using in-process hashmap approach.
+        
+        Suitable for repositories with 2-5M definitions. Builds an in-memory
+        index of all definitions before resolving placeholders.
+        
+        Returns:
+            Dictionary with resolution statistics
+        """
+        self.logger.info("Building in-memory symbol map for fast resolution...")
+        
+        # First, build an in-memory map of all definitions
+        function_map_query = """
+        MATCH (f:Function)
+        RETURN f.name as name, 
+               f.file_id as file_id, 
+               f.class_id as class_id,
+               id(f) as node_id
+        """
+        
+        function_map = {}
+        function_results = self.neo4j_tool.execute_cypher(function_map_query)
+        
+        for result in function_results:
+            name = result["name"]
+            if name not in function_map:
+                function_map[name] = []
+                
+            function_map[name].append({
+                "node_id": result["node_id"],
+                "file_id": result["file_id"],
+                "class_id": result["class_id"]
+            })
+        
+        self.logger.info(f"Built in-memory index with {len(function_map)} function names")
+        
+        # Process call sites in batches
+        batch_size = 5000
+        total_resolved_calls = 0
+        
+        while True:
+            # Get a batch of unresolved call sites
+            call_sites_query = f"""
+            MATCH (cs:CallSite)
+            WHERE NOT EXISTS((cs)-[:RESOLVES_TO]->())
+            RETURN cs.id as id, 
+                   cs.call_name as name,
+                   cs.caller_file_id as file_id,
+                   cs.call_module as module
+            LIMIT {batch_size}
+            """
+            
+            call_sites = self.neo4j_tool.execute_cypher(call_sites_query)
+            
+            if not call_sites:
+                break
+                
+            # Process this batch
+            resolutions = []
+            
+            for call_site in call_sites:
+                call_id = call_site["id"]
+                call_name = call_site["name"]
+                file_id = call_site["file_id"]
+                
+                if call_name not in function_map:
+                    continue
+                    
+                # Find best matching function
+                candidates = function_map[call_name]
+                best_score = 0
+                best_node_id = None
+                
+                for candidate in candidates:
+                    # Same file is preferred
+                    if candidate["file_id"] == file_id:
+                        score = 1.0
+                    else:
+                        score = 0.7
+                        
+                    if score > best_score:
+                        best_score = score
+                        best_node_id = candidate["node_id"]
+                
+                if best_node_id:
+                    resolutions.append({
+                        "call_id": call_id,
+                        "node_id": best_node_id,
+                        "score": best_score
+                    })
+            
+            # Batch create all the RESOLVES_TO relationships
+            if resolutions:
+                # Create multi-parameter statement with all resolutions
+                params = {"resolutions": resolutions}
+                
+                resolve_query = """
+                UNWIND $resolutions AS res
+                MATCH (cs:CallSite {id: res.call_id})
+                MATCH (f) WHERE id(f) = res.node_id
+                MERGE (cs)-[r:RESOLVES_TO]->(f)
+                SET r.score = res.score, r.timestamp = timestamp()
+                """
+                
+                self.neo4j_tool.execute_cypher(resolve_query, params)
+                total_resolved_calls += len(resolutions)
+                
+                self.logger.info(f"Resolved {len(resolutions)} call sites in this batch")
+                
+            if len(call_sites) < batch_size:
+                break
+        
+        # Similarly process import sites (simplified version)
+        # Process import sites using similar batch approach
+        total_resolved_imports = 0
+        
+        # Get class map for import resolution
+        class_map_query = """
+        MATCH (c:Class)
+        RETURN c.name as name, id(c) as node_id
+        """
+        
+        class_map = {}
+        class_results = self.neo4j_tool.execute_cypher(class_map_query)
+        
+        for result in class_results:
+            class_map[result["name"]] = result["node_id"]
+        
+        # Process import sites in batches
+        while True:
+            import_sites_query = f"""
+            MATCH (is:ImportSite)
+            WHERE NOT EXISTS((is)-[:RESOLVES_TO]->())
+            RETURN is.id as id, is.import_name as name
+            LIMIT {batch_size}
+            """
+            
+            import_sites = self.neo4j_tool.execute_cypher(import_sites_query)
+            
+            if not import_sites:
+                break
+                
+            # Process this batch
+            resolutions = []
+            
+            for import_site in import_sites:
+                import_id = import_site["id"]
+                import_name = import_site["name"]
+                
+                if import_name in class_map:
+                    resolutions.append({
+                        "import_id": import_id,
+                        "node_id": class_map[import_name],
+                        "score": 1.0
+                    })
+            
+            # Batch create all the RESOLVES_TO relationships
+            if resolutions:
+                # Create multi-parameter statement with all resolutions
+                params = {"resolutions": resolutions}
+                
+                resolve_query = """
+                UNWIND $resolutions AS res
+                MATCH (is:ImportSite {id: res.import_id})
+                MATCH (c) WHERE id(c) = res.node_id
+                MERGE (is)-[r:RESOLVES_TO]->(c)
+                SET r.score = res.score, r.timestamp = timestamp()
+                """
+                
+                self.neo4j_tool.execute_cypher(resolve_query, params)
+                total_resolved_imports += len(resolutions)
+                
+                self.logger.info(f"Resolved {len(resolutions)} import sites in this batch")
+                
+            if len(import_sites) < batch_size:
+                break
+        
+        # Update graph statistics
+        self.graph_stats["resolved_calls"] += total_resolved_calls
+        self.graph_stats["resolved_imports"] += total_resolved_imports
+        
+        return {
+            "resolved_calls": total_resolved_calls,
+            "resolved_imports": total_resolved_imports
+        }
+    
+    def _resolve_all_placeholders_sharded(self) -> Dict[str, int]:
+        """
+        Perform bulk resolution using label-sharded index approach.
+        
+        Suitable for massive repositories (>5M definitions). Creates SymIndex
+        nodes and resolves using node IDs rather than full entity scans.
+        
+        Returns:
+            Dictionary with resolution statistics
+        """
+        # First, ensure SymIndex nodes exist
+        self._ensure_sym_index_nodes()
+        
+        # Process in batches to avoid long-running transactions
+        batch_size = 5000
+        total_resolved_calls = 0
+        total_resolved_imports = 0
+        
+        # Resolve call sites using SymIndex for lookup
+        while True:
+            call_site_query = f"""
+            MATCH (cs:CallSite)
+            WHERE NOT EXISTS((cs)-[:RESOLVES_TO]->())
+            WITH cs LIMIT {batch_size}
+            MATCH (si:SymIndex {{name: cs.call_name}})
+            WITH cs, si, 
+                 CASE WHEN si.file_id = cs.caller_file_id THEN 1.0 ELSE 0.7 END as score
+            ORDER BY cs.id, score DESC
+            WITH cs, collect({{si: si, score: score}})[0] as best_match
+            MATCH (f) WHERE id(f) = best_match.si.target_id
+            MERGE (cs)-[r:RESOLVES_TO]->(f)
+            SET r.score = best_match.score, r.timestamp = timestamp()
+            RETURN count(r) as resolved_calls
+            """
+            
+            call_result = self.neo4j_tool.execute_cypher(call_site_query)
+            resolved_calls = call_result[0]["resolved_calls"] if call_result else 0
+            total_resolved_calls += resolved_calls
+            
+            if resolved_calls == 0:
+                break
+                
+            self.logger.info(f"Resolved {resolved_calls} call sites in this batch using SymIndex")
+        
+        # Resolve import sites using SymIndex for class lookups
+        while True:
+            import_site_query = f"""
+            MATCH (is:ImportSite)
+            WHERE NOT EXISTS((is)-[:RESOLVES_TO]->())
+            WITH is LIMIT {batch_size}
+            MATCH (si:SymIndex {{name: is.import_name, entity_type: 'Class'}})
+            MATCH (c:Class) WHERE id(c) = si.target_id
+            MERGE (is)-[r:RESOLVES_TO]->(c)
+            SET r.score = 1.0, r.timestamp = timestamp()
+            RETURN count(r) as resolved_imports
+            """
+            
+            import_result = self.neo4j_tool.execute_cypher(import_site_query)
+            resolved_imports = import_result[0]["resolved_imports"] if import_result else 0
+            total_resolved_imports += resolved_imports
+            
+            if resolved_imports == 0:
+                break
+                
+            self.logger.info(f"Resolved {resolved_imports} import sites in this batch using SymIndex")
+        
+        # Update graph statistics
+        self.graph_stats["resolved_calls"] += total_resolved_calls
+        self.graph_stats["resolved_imports"] += total_resolved_imports
+        
+        return {
+            "resolved_calls": total_resolved_calls,
+            "resolved_imports": total_resolved_imports
         }
     
     def _process_ast(self, ast_data: Dict[str, Any], repository: str,
