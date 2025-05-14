@@ -13,6 +13,7 @@ Code Indexer creates a semantic understanding of codebases by combining AST pars
 - **Vector Embeddings**: Semantic embedding of code chunks for similarity search
 - **Natural Language Search**: Query code using natural language
 - **Flexible Architecture**: Two-tier design with independent ingestion and semantic layers
+- **Cross-File Resolution**: Accurate tracking of call sites and import relationships
 
 ## Architecture
 
@@ -22,6 +23,8 @@ The system follows a two-tier architecture:
 - **Git Ingestion**: Extracts code from repositories
 - **Code Parsing**: Generates AST representations using Tree-sitter
 - **Graph Building**: Creates a knowledge graph in Neo4j
+  - **Placeholder Pattern**: Tracks call sites and import sites as first-class nodes
+  - **Cross-File Resolution**: Creates accurate relationships across file boundaries
 - **Chunking**: Divides code into semantic chunks
 - **Embedding**: Generates vector representations of code chunks
 
@@ -95,6 +98,21 @@ codeindexer-ingest --repo https://github.com/example/repo --step graph
 codeindexer-ingest --repo https://github.com/example/repo --detect-dead-code
 ```
 
+### Running the Enhanced Graph Builder
+
+```bash
+# Process a repository with enhanced graph builder (placeholder pattern)
+python run_enhanced_graph_builder.py --repo-path /path/to/repo --resolution-strategy join
+
+# Options for different codebase sizes
+python run_enhanced_graph_builder.py --repo-path /path/to/repo --resolution-strategy hashmap  # For medium repos (2-5M definitions)
+python run_enhanced_graph_builder.py --repo-path /path/to/repo --resolution-strategy sharded  # For large repos (>5M definitions)
+
+# Control how resolution happens
+python run_enhanced_graph_builder.py --repo-path /path/to/repo --immediate-resolution  # Resolve during processing
+python run_enhanced_graph_builder.py --repo-path /path/to/repo  # Bulk resolution at the end
+```
+
 ### Running the Semantic API (requires ADK)
 
 ```bash
@@ -121,6 +139,20 @@ docker run -p 8000:8000 codeindexer:semantic
 # Install dev dependencies
 pip install -e ".[dev]"
 ```
+
+## Advanced Graph Features
+
+The enhanced graph builder implements the placeholder pattern for accurate cross-file relationship tracking:
+
+- **Durable Placeholders**: Call sites and import sites preserved as first-class nodes
+- **Two-Phase Resolution**: Efficient resolution of placeholders to their targets
+- **Multiple Resolution Strategies**: Options for different codebase sizes
+  - Pure Cypher Join: Best for repos with <2M definitions
+  - In-Process Hash Map: Optimized for 2-5M definitions
+  - Label-Sharded Index: For massive codebases (>5M definitions)
+- **Relationship Confidence**: Scores indicate certainty of resolutions
+
+Read more about the placeholder pattern in [docs/placeholder_pattern.md](docs/placeholder_pattern.md).
 
 ## License
 
