@@ -9,9 +9,10 @@ import json
 import asyncio
 from typing import Dict, Any, List, Optional, Tuple, Union
 
-from google.adk import Agent
-from google.adk.tools.google_api_tool import AgentContext, HandlerResponse
-from google.adk.tools.google_api_tool import ToolResponse
+from google.adk import Agent, AgentSpec
+from google.adk.runtime.context import AgentContext
+from google.adk.runtime.responses import HandlerResponse, ToolResponse, ToolStatus
+
 
 class SearchOrchestratorAgent(Agent):
     """
@@ -22,21 +23,22 @@ class SearchOrchestratorAgent(Agent):
     to provide a complete end-to-end search experience.
     """
     
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, name: str = "search_orchestrator_agent", **kwargs):
         """
         Initialize the search orchestrator agent.
         
         Args:
-            config: Configuration dictionary
+            name: Agent name
+            **kwargs: Additional parameters including config
         """
-        super().__init__()
-        self.config = config
-        self.logger = logging.getLogger("search_orchestrator_agent")
+        super().__init__(name=name)
+        self.config = kwargs.get("config", {})
+        self.logger = logging.getLogger(name)
         
         # Configure defaults
-        self.search_types = config.get("search_types", ["hybrid"])  # hybrid, vector, graph
-        self.enable_parallel = config.get("enable_parallel", True)
-        self.vector_store_collection = config.get("vector_store_collection", "code_embeddings")
+        self.search_types = self.config.get("search_types", ["hybrid"])  # hybrid, vector, graph
+        self.enable_parallel = self.config.get("enable_parallel", True)
+        self.vector_store_collection = self.config.get("vector_store_collection", "code_embeddings")
         
         # Available agents
         self.query_agent = None
@@ -284,3 +286,23 @@ class SearchOrchestratorAgent(Agent):
         graph_results = self._perform_graph_search(search_spec, max_results)
         
         return vector_results, graph_results
+        
+    @classmethod
+    def build_spec(cls, name: str = "search_orchestrator_agent") -> AgentSpec:
+        """
+        Build the agent specification.
+        
+        Args:
+            name: Name of the agent
+            
+        Returns:
+            Agent specification
+        """
+        return AgentSpec(
+            name=name,
+            description="Agent responsible for orchestrating the search flow across multiple search agents",
+            agent_class=cls,
+        )
+
+# Create the agent specification
+spec = SearchOrchestratorAgent.build_spec(name="search_orchestrator_agent")

@@ -9,7 +9,9 @@ import time
 import numpy as np
 from typing import Dict, List, Any, Optional, Tuple
 
-from google.adk import Agent, AgentContext
+from google.adk import Agent, AgentSpec
+from google.adk.runtime.context import AgentContext
+from google.adk.runtime.responses import HandlerResponse, ToolResponse, ToolStatus
 from google.adk.agents.llm_agent import BaseTool
 
 from code_indexer.tools.embedding_tool import EmbeddingTool
@@ -23,15 +25,21 @@ class EmbeddingAgent(Agent):
     embeddings using the EmbeddingTool, preparing them for storage and search.
     """
     
-    def __init__(self):
-        """Initialize the Embedding Agent."""
-        super().__init__()
-        self.logger = logging.getLogger(__name__)
+    def __init__(self, name: str = "embedding_agent", **kwargs):
+        """
+        Initialize the Embedding Agent.
+        
+        Args:
+            name: Agent name
+            **kwargs: Additional parameters including config
+        """
+        super().__init__(name=name)
+        self.logger = logging.getLogger(name)
         
         # Default batch size
         self.batch_size = 10
     
-    def initialize(self, context: AgentContext) -> None:
+    def init(self, context: AgentContext) -> None:
         """
         Initialize the agent with necessary tools and state.
         
@@ -48,7 +56,7 @@ class EmbeddingAgent(Agent):
         if config:
             self.batch_size = config.get("batch_size", self.batch_size)
     
-    def run(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+    def run(self, inputs: Dict[str, Any]) -> HandlerResponse:
         """
         Generate embeddings for code chunks.
         
@@ -56,14 +64,14 @@ class EmbeddingAgent(Agent):
             inputs: Dictionary with code chunks from the ChunkerAgent
             
         Returns:
-            Dictionary with embeddings and their metadata
+            HandlerResponse with embeddings and their metadata
         """
         # Extract inputs
         chunks = inputs.get("chunks", [])
         
         if not chunks:
             self.logger.warning("No chunks provided for embedding")
-            return {"embeddings": [], "count": 0}
+            return HandlerResponse.success({"embeddings": [], "count": 0})
         
         # Track progress and results
         embeddings = []
@@ -115,12 +123,12 @@ class EmbeddingAgent(Agent):
                 failed += len(batch)
         
         # Return results
-        return {
+        return HandlerResponse.success({
             "embeddings": embeddings,
             "count": len(embeddings),
             "successful": successful,
             "failed": failed
-        }
+        })
     
     def _format_chunk_for_embedding(self, chunk: Dict[str, Any]) -> str:
         """
@@ -172,3 +180,23 @@ class EmbeddingAgent(Agent):
             formatted = f"LANGUAGE: {language}\nFILE: {file_path}\nTYPE: code\n\n{content}"
         
         return formatted
+        
+    @classmethod
+    def build_spec(cls, name: str = "embedding_agent") -> AgentSpec:
+        """
+        Build the agent specification.
+        
+        Args:
+            name: Name of the agent
+            
+        Returns:
+            Agent specification
+        """
+        return AgentSpec(
+            name=name,
+            description="Agent responsible for generating vector embeddings for code chunks",
+            agent_class=cls,
+        )
+
+# Create the agent specification
+spec = EmbeddingAgent.build_spec(name="embedding_agent")

@@ -8,12 +8,13 @@ import logging
 import time
 from typing import Dict, List, Any, Optional, Tuple, Union
 
-from code_indexer.agents.adk_adapter import Agent, AgentContext, HandlerResponse, ToolResponse, ToolStatus, init_agent
+from google.adk import Agent, AgentSpec
+from google.adk.runtime.context import AgentContext
+from google.adk.runtime.responses import HandlerResponse, ToolResponse, ToolStatus
 
 from code_indexer.tools.neo4j_tool import Neo4jTool
 
 
-@init_agent(name="dead_code_detector_agent")
 class DeadCodeDetectorAgent(Agent):
     """
     Agent responsible for detecting potentially unused code.
@@ -22,35 +23,25 @@ class DeadCodeDetectorAgent(Agent):
     aren't called by any other code, helping identify dead code.
     """
     
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, name: str = "dead_code_detector_agent", **kwargs):
         """
-        Initialize the Dead Code Detector Agent.
+        Initialize the agent.
         
         Args:
-            config: Configuration dictionary
+            name: Agent name
+            **kwargs: Additional parameters including config
         """
-        # The Agent initialization is handled by the decorator
-        # This method is not directly called - wrapper setup is done in init_wrapper
-        pass
-    
-    def init_wrapper(self, wrapper, config: Dict[str, Any], *args, **kwargs):
-        """
-        Initialize the wrapper with agent state.
-        
-        Args:
-            wrapper: Agent wrapper instance
-            config: Configuration dictionary
-        """
-        # Store the configuration
-        wrapper.config = config
+        super().__init__(name=name)
+        self.logger = logging.getLogger(name)
+        self.config = kwargs.get("config", {})
         
         # Configure defaults
-        wrapper.ignore_entry_points = config.get("ignore_entry_points", True)
-        wrapper.ignore_tests = config.get("ignore_tests", True)
-        wrapper.max_results = config.get("max_results", 100)
+        self.ignore_entry_points = self.config.get("ignore_entry_points", True)
+        self.ignore_tests = self.config.get("ignore_tests", True)
+        self.max_results = self.config.get("max_results", 100)
         
         # State
-        wrapper.neo4j_tool = None
+        self.neo4j_tool = None
     
     def init(self, context: AgentContext) -> None:
         """
@@ -59,42 +50,38 @@ class DeadCodeDetectorAgent(Agent):
         Args:
             context: Agent context providing access to tools and environment
         """
-        # Get wrapper for this agent
-        wrapper = self.get_wrapper()
-        wrapper.context = context
-        wrapper.logger = logging.getLogger("dead_code_detector_agent")
+        self.context = context
         
         # Get Neo4j tool
         tool_response = context.get_tool("neo4j_tool")
         if tool_response.status.is_success():
-            wrapper.neo4j_tool = tool_response.tool
-            wrapper.logger.info("Successfully acquired Neo4j tool")
+            self.neo4j_tool = tool_response.tool
+            self.logger.info("Successfully acquired Neo4j tool")
         else:
-            wrapper.logger.error("Failed to acquire Neo4j tool: %s", 
+            self.logger.error("Failed to acquire Neo4j tool: %s", 
                                 tool_response.status.message)
     
-    def run(self, wrapper, input_data: Dict[str, Any]) -> HandlerResponse:
+    def run(self, input_data: Dict[str, Any]) -> HandlerResponse:
         """
         Detect potentially unused code in the graph.
         
         Args:
-            wrapper: Agent wrapper with state
             input_data: Dictionary with detection configuration
             
         Returns:
             HandlerResponse with detection results
         """
-        wrapper.logger.info("Starting dead code detection")
+        self.logger.info("Starting dead code detection")
         
         # Check if Neo4j tool is available
-        if not wrapper.neo4j_tool:
+        if not self.neo4j_tool:
             return HandlerResponse.error("Neo4j tool not available")
         
         # Extract configuration
         repository = input_data.get("repository", "")
         scope = input_data.get("scope", "all")  # all, functions, classes
         exclude_patterns = input_data.get("exclude_patterns", [])
-        max_results = input_data.get("max_results", wrapper.max_results)
+        max_results = input_data.get("max_results", self.max_results)
         
         # Find potentially unused code based on scope
         dead_functions = []
@@ -102,7 +89,6 @@ class DeadCodeDetectorAgent(Agent):
         
         if scope in ["all", "functions"]:
             dead_functions = self._find_unused_functions(
-                wrapper=wrapper,
                 repository=repository,
                 exclude_patterns=exclude_patterns,
                 max_results=max_results
@@ -110,19 +96,17 @@ class DeadCodeDetectorAgent(Agent):
         
         if scope in ["all", "classes"]:
             dead_classes = self._find_unused_classes(
-                wrapper=wrapper,
                 repository=repository,
                 exclude_patterns=exclude_patterns,
                 max_results=max_results
             )
         
         # Log findings
-        wrapper.logger.info(f"Found {len(dead_functions)} potentially unused functions")
-        wrapper.logger.info(f"Found {len(dead_classes)} potentially unused classes")
+        self.logger.info(f"Found {len(dead_functions)} potentially unused functions")
+        self.logger.info(f"Found {len(dead_classes)} potentially unused classes")
         
         # Structure results in a standardized format
         results = self._format_results(
-            wrapper=wrapper,
             functions=dead_functions, 
             classes=dead_classes
         )
@@ -136,16 +120,15 @@ class DeadCodeDetectorAgent(Agent):
             "timestamp": time.time()
         }
         
-        wrapper.logger.info("Dead code detection completed successfully")
+        self.logger.info("Dead code detection completed successfully")
         return HandlerResponse.success(response_data)
     
-    def _find_unused_functions(self, wrapper, repository: str, exclude_patterns: List[str], 
+    def _find_unused_functions(self, repository: str, exclude_patterns: List[str], 
                              max_results: int) -> List[Dict[str, Any]]:
         """
         Find functions that aren't called by any other code.
         
         Args:
-            wrapper: Agent wrapper with state
             repository: Repository name/path filter
             exclude_patterns: Patterns to exclude from results
             max_results: Maximum number of results to return
@@ -160,7 +143,7 @@ class DeadCodeDetectorAgent(Agent):
         
         # Build exclusion patterns
         exclusion_clause = "AND NOT f.name IN ['main', '__main__', '__init__']"
-        if wrapper.ignore_tests:
+        if self.ignore_tests:
             exclusion_clause += " AND NOT f.name STARTS WITH 'test_'"
             exclusion_clause += " AND NOT f.name STARTS WITH 'Test'"
         
@@ -183,12 +166,12 @@ class DeadCodeDetectorAgent(Agent):
         
         try:
             # Execute query
-            tool_response = wrapper.neo4j_tool.execute_query({
+            tool_response = self.neo4j_tool.execute_query({
                 "query": query
             })
             
             if not isinstance(tool_response, ToolResponse) or not tool_response.status.is_success():
-                wrapper.logger.error(f"Query failed: {tool_response.status.message if isinstance(tool_response, ToolResponse) else 'Unknown error'}")
+                self.logger.error(f"Query failed: {tool_response.status.message if isinstance(tool_response, ToolResponse) else 'Unknown error'}")
                 return []
             
             results = tool_response.data.get("results", [])
@@ -197,22 +180,21 @@ class DeadCodeDetectorAgent(Agent):
             for result in results:
                 file_id = result.get("file_id")
                 if file_id:
-                    file_info = self._get_file_info(wrapper, file_id)
+                    file_info = self._get_file_info(file_id)
                     result["file_path"] = file_info.get("path", "")
                     result["language"] = file_info.get("language", "")
             
             return results
         except Exception as e:
-            wrapper.logger.error(f"Error finding unused functions: {e}")
+            self.logger.error(f"Error finding unused functions: {e}")
             return []
     
-    def _find_unused_classes(self, wrapper, repository: str, exclude_patterns: List[str], 
+    def _find_unused_classes(self, repository: str, exclude_patterns: List[str], 
                            max_results: int) -> List[Dict[str, Any]]:
         """
         Find classes whose methods aren't called by any other code.
         
         Args:
-            wrapper: Agent wrapper with state
             repository: Repository name/path filter
             exclude_patterns: Patterns to exclude from results
             max_results: Maximum number of results to return
@@ -227,7 +209,7 @@ class DeadCodeDetectorAgent(Agent):
         
         # Build exclusion patterns
         exclusion_clause = ""
-        if wrapper.ignore_tests:
+        if self.ignore_tests:
             exclusion_clause += "AND NOT c.name STARTS WITH 'Test' "
             exclusion_clause += "AND NOT c.name ENDS WITH 'Test' "
             exclusion_clause += "AND NOT c.name ENDS WITH 'TestCase' "
@@ -253,12 +235,12 @@ class DeadCodeDetectorAgent(Agent):
         
         try:
             # Execute query
-            tool_response = wrapper.neo4j_tool.execute_query({
+            tool_response = self.neo4j_tool.execute_query({
                 "query": query
             })
             
             if not isinstance(tool_response, ToolResponse) or not tool_response.status.is_success():
-                wrapper.logger.error(f"Query failed: {tool_response.status.message if isinstance(tool_response, ToolResponse) else 'Unknown error'}")
+                self.logger.error(f"Query failed: {tool_response.status.message if isinstance(tool_response, ToolResponse) else 'Unknown error'}")
                 return []
             
             results = tool_response.data.get("results", [])
@@ -267,21 +249,20 @@ class DeadCodeDetectorAgent(Agent):
             for result in results:
                 file_id = result.get("file_id")
                 if file_id:
-                    file_info = self._get_file_info(wrapper, file_id)
+                    file_info = self._get_file_info(file_id)
                     result["file_path"] = file_info.get("path", "")
                     result["language"] = file_info.get("language", "")
             
             return results
         except Exception as e:
-            wrapper.logger.error(f"Error finding unused classes: {e}")
+            self.logger.error(f"Error finding unused classes: {e}")
             return []
     
-    def _get_file_info(self, wrapper, file_id: str) -> Dict[str, Any]:
+    def _get_file_info(self, file_id: str) -> Dict[str, Any]:
         """
         Get file information from the graph.
         
         Args:
-            wrapper: Agent wrapper with state
             file_id: ID of the file
             
         Returns:
@@ -293,7 +274,7 @@ class DeadCodeDetectorAgent(Agent):
         """
         
         try:
-            tool_response = wrapper.neo4j_tool.execute_query({
+            tool_response = self.neo4j_tool.execute_query({
                 "query": query,
                 "params": {"file_id": file_id}
             })
@@ -305,16 +286,15 @@ class DeadCodeDetectorAgent(Agent):
             
             return {}
         except Exception as e:
-            wrapper.logger.error(f"Error getting file info: {e}")
+            self.logger.error(f"Error getting file info: {e}")
             return {}
     
-    def _format_results(self, wrapper, functions: List[Dict[str, Any]], 
+    def _format_results(self, functions: List[Dict[str, Any]], 
                       classes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Format results into a standardized structure.
         
         Args:
-            wrapper: Agent wrapper with state
             functions: List of unused functions
             classes: List of unused classes
             
@@ -333,7 +313,7 @@ class DeadCodeDetectorAgent(Agent):
                 "language": func.get("language", ""),
                 "start_line": func.get("start_line", 0),
                 "end_line": func.get("end_line", 0),
-                "class_name": self._get_class_name(wrapper, func.get("class_id", "")),
+                "class_name": self._get_class_name(func.get("class_id", "")),
                 "docstring": func.get("docstring", "")
             })
         
@@ -351,12 +331,11 @@ class DeadCodeDetectorAgent(Agent):
         
         return formatted_results
     
-    def _get_class_name(self, wrapper, class_id: str) -> str:
+    def _get_class_name(self, class_id: str) -> str:
         """
         Get class name from class ID.
         
         Args:
-            wrapper: Agent wrapper with state
             class_id: ID of the class
             
         Returns:
@@ -371,7 +350,7 @@ class DeadCodeDetectorAgent(Agent):
         """
         
         try:
-            tool_response = wrapper.neo4j_tool.execute_query({
+            tool_response = self.neo4j_tool.execute_query({
                 "query": query,
                 "params": {"class_id": class_id}
             })
@@ -384,3 +363,23 @@ class DeadCodeDetectorAgent(Agent):
             return ""
         except Exception:
             return ""
+            
+    @classmethod
+    def build_spec(cls, name: str = "dead_code_detector_agent") -> AgentSpec:
+        """
+        Build the agent specification.
+        
+        Args:
+            name: Name of the agent
+            
+        Returns:
+            Agent specification
+        """
+        return AgentSpec(
+            name=name,
+            description="Agent responsible for detecting potentially unused code",
+            agent_class=cls,
+        )
+
+# Create the agent specification
+spec = DeadCodeDetectorAgent.build_spec(name="dead_code_detector_agent")

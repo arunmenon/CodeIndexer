@@ -10,7 +10,11 @@ import os
 import time
 from typing import Dict, Any, List, Optional, Set
 
-from code_indexer.agents.adk_adapter import Agent, AgentContext, HandlerResponse, ToolResponse, init_agent
+from google.adk import Agent
+from google.adk.decorators import init_agent
+from google.adk.api.agent import AgentContext, HandlerResponse
+from google.adk.api.tool import ToolResponse, ToolStatus
+
 
 @init_agent(name="git_ingestion_agent")
 class GitIngestionAgent(Agent):
@@ -21,35 +25,28 @@ class GitIngestionAgent(Agent):
     indexing, and triggers the indexing pipeline for changed files.
     """
     
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, name: str = "git_ingestion_agent", **kwargs):
         """
-        Initialize the git ingestion agent.
+        Initialize the agent.
         
         Args:
-            config: Configuration dictionary
+            name: Agent name
+            **kwargs: Additional parameters including config
         """
-        # The Agent initialization is handled by the decorator
-        # This method is not directly called - wrapper setup is done in init_wrapper
-        pass
-    
-    def init_wrapper(self, wrapper, config: Dict[str, Any], *args, **kwargs):
-        """
-        Initialize the wrapper with agent state.
+        super().__init__(name=name)
+        self.logger = logging.getLogger(name)
+        self.config = kwargs.get("config", {})
         
-        Args:
-            wrapper: Agent wrapper instance
-            config: Configuration dictionary
-        """
         # Configure defaults from config dictionary
-        wrapper.repositories = config.get('repositories', [])
-        wrapper.default_branch = config.get('default_branch', 'main')
-        wrapper.polling_interval = config.get('polling_interval', 3600)  # 1 hour
-        wrapper.commit_history_file = config.get('commit_history_file', 'commit_history.json')
-        wrapper.max_file_batch = config.get('max_file_batch', 100)
+        self.repositories = self.config.get('repositories', [])
+        self.default_branch = self.config.get('default_branch', 'main')
+        self.polling_interval = self.config.get('polling_interval', 3600)  # 1 hour
+        self.commit_history_file = self.config.get('commit_history_file', 'commit_history.json')
+        self.max_file_batch = self.config.get('max_file_batch', 100)
         
         # State
-        wrapper.commit_history = {}  # repository_url -> last_indexed_commit
-        wrapper.git_tool = None
+        self.commit_history = {}  # repository_url -> last_indexed_commit
+        self.git_tool = None
     
     def init(self, context: AgentContext) -> None:
         """
@@ -58,41 +55,38 @@ class GitIngestionAgent(Agent):
         Args:
             context: Agent context providing access to tools and environment
         """
-        # Get wrapper for this agent
-        wrapper = self.get_wrapper()
-        wrapper.context = context
+        self.context = context
         
         # Get Git tool
         tool_response = context.get_tool("git_tool")
         if tool_response.status.is_success():
-            wrapper.git_tool = tool_response.tool
-            wrapper.logger.info("Successfully acquired Git tool")
+            self.git_tool = tool_response.tool
+            self.logger.info("Successfully acquired Git tool")
         else:
-            wrapper.logger.error("Failed to acquire Git tool: %s", 
+            self.logger.error("Failed to acquire Git tool: %s", 
                                 tool_response.status.message)
         
         # Load commit history
-        self._load_commit_history(wrapper)
+        self._load_commit_history()
     
-    def run(self, wrapper, input_data: Dict[str, Any]) -> HandlerResponse:
+    def run(self, input_data: Dict[str, Any]) -> HandlerResponse:
         """
         Run the git ingestion agent.
         
         Args:
-            wrapper: Agent wrapper with state
             input_data: Dictionary containing input parameters
             
         Returns:
             HandlerResponse with detection results
         """
-        wrapper.logger.info("Starting Git ingestion agent")
+        self.logger.info("Starting Git ingestion agent")
         
         # Check if Git tool is available
-        if not wrapper.git_tool:
+        if not self.git_tool:
             return HandlerResponse.error("Git tool not available")
         
         # Extract parameters from input
-        repositories = input_data.get("repositories", wrapper.repositories)
+        repositories = input_data.get("repositories", self.repositories)
         if not repositories:
             return HandlerResponse.error("No repositories specified")
         
@@ -105,16 +99,15 @@ class GitIngestionAgent(Agent):
         for repo_config in repositories:
             # Extract repository information
             repo_url = repo_config.get("url", "")
-            branch = repo_config.get("branch", wrapper.default_branch)
+            branch = repo_config.get("branch", self.default_branch)
             repo_name = repo_config.get("name", repo_url.split("/")[-1].replace(".git", ""))
             
             if not repo_url:
-                wrapper.logger.warning("Repository URL not specified, skipping")
+                self.logger.warning("Repository URL not specified, skipping")
                 continue
             
             # Process repository
             repo_result = self._process_repository(
-                wrapper=wrapper,
                 repo_url=repo_url, 
                 branch=branch,
                 repo_name=repo_name,
@@ -125,20 +118,19 @@ class GitIngestionAgent(Agent):
             processing_results.append(repo_result)
         
         # Save commit history
-        self._save_commit_history(wrapper)
+        self._save_commit_history()
         
         return HandlerResponse.success({
             "results": processing_results,
             "repositories_processed": len(processing_results)
         })
     
-    def _process_repository(self, wrapper, repo_url: str, branch: str, repo_name: str,
+    def _process_repository(self, repo_url: str, branch: str, repo_name: str,
                           mode: str, force_reindex: bool) -> Dict[str, Any]:
         """
         Process a single repository.
         
         Args:
-            wrapper: Agent wrapper with state
             repo_url: Repository URL
             branch: Branch to process
             repo_name: Repository name
@@ -148,10 +140,10 @@ class GitIngestionAgent(Agent):
         Returns:
             Dictionary with processing results
         """
-        wrapper.logger.info(f"Processing repository {repo_name} ({repo_url})")
+        self.logger.info(f"Processing repository {repo_name} ({repo_url})")
         
         # Clone or update repository
-        success, repo_path = wrapper.git_tool.clone_repository(repo_url, branch)
+        success, repo_path = self.git_tool.clone_repository(repo_url, branch)
         if not success:
             return {
                 "repository": repo_name,
@@ -161,7 +153,7 @@ class GitIngestionAgent(Agent):
             }
         
         # Get latest commit
-        latest_commit_info = wrapper.git_tool.get_commit_info(repo_path)
+        latest_commit_info = self.git_tool.get_commit_info(repo_path)
         if not latest_commit_info:
             return {
                 "repository": repo_name,
@@ -173,16 +165,16 @@ class GitIngestionAgent(Agent):
         latest_commit = latest_commit_info["hash"]
         
         # Get last indexed commit
-        last_indexed_commit = wrapper.commit_history.get(repo_url)
+        last_indexed_commit = self.commit_history.get(repo_url)
         
         # Check if reindexing is needed
         if mode == "full" or force_reindex or not last_indexed_commit:
             # Full indexing
-            changed_files = self._get_all_files(wrapper, repo_path)
+            changed_files = self._get_all_files(repo_path)
             is_full_indexing = True
         else:
             # Incremental indexing
-            changed_files_map = wrapper.git_tool.get_changed_files(
+            changed_files_map = self.git_tool.get_changed_files(
                 repo_path, base_commit=last_indexed_commit, head_commit=latest_commit
             )
             
@@ -195,10 +187,10 @@ class GitIngestionAgent(Agent):
             is_full_indexing = False
         
         # Filter indexable files
-        indexable_files = wrapper.git_tool.filter_indexable_files(repo_path, changed_files)
+        indexable_files = self.git_tool.filter_indexable_files(repo_path, changed_files)
         
         # Update commit history
-        wrapper.commit_history[repo_url] = latest_commit
+        self.commit_history[repo_url] = latest_commit
         
         # If no files to index, return success
         if not indexable_files:
@@ -214,15 +206,14 @@ class GitIngestionAgent(Agent):
             }
         
         # Process files in batches
-        file_batches = self._create_file_batches(wrapper, indexable_files)
+        file_batches = self._create_file_batches(indexable_files)
         files_processed = 0
         
         for batch_index, file_batch in enumerate(file_batches):
-            wrapper.logger.info(f"Processing batch {batch_index + 1}/{len(file_batches)}")
+            self.logger.info(f"Processing batch {batch_index + 1}/{len(file_batches)}")
             
             # Process batch of files
             batch_result = self._process_file_batch(
-                wrapper=wrapper,
                 repo_path=repo_path,
                 repo_url=repo_url,
                 repo_name=repo_name,
@@ -235,7 +226,7 @@ class GitIngestionAgent(Agent):
             if batch_result.get("status") == "success":
                 files_processed += batch_result.get("files_processed", 0)
             else:
-                wrapper.logger.error(f"Failed to process batch: {batch_result.get('message')}")
+                self.logger.error(f"Failed to process batch: {batch_result.get('message')}")
         
         return {
             "repository": repo_name,
@@ -248,12 +239,11 @@ class GitIngestionAgent(Agent):
             "message": f"Processed {files_processed} files"
         }
     
-    def _get_all_files(self, wrapper, repo_path: str) -> List[str]:
+    def _get_all_files(self, repo_path: str) -> List[str]:
         """
         Get all files in a repository.
         
         Args:
-            wrapper: Agent wrapper with state
             repo_path: Path to the repository
             
         Returns:
@@ -274,30 +264,28 @@ class GitIngestionAgent(Agent):
         
         return all_files
     
-    def _create_file_batches(self, wrapper, files: List[str]) -> List[List[str]]:
+    def _create_file_batches(self, files: List[str]) -> List[List[str]]:
         """
         Create batches of files for processing.
         
         Args:
-            wrapper: Agent wrapper with state
             files: List of file paths
             
         Returns:
             List of file path batches
         """
         batches = []
-        for i in range(0, len(files), wrapper.max_file_batch):
-            batches.append(files[i:i + wrapper.max_file_batch])
+        for i in range(0, len(files), self.max_file_batch):
+            batches.append(files[i:i + self.max_file_batch])
         return batches
     
-    def _process_file_batch(self, wrapper, repo_path: str, repo_url: str, repo_name: str,
+    def _process_file_batch(self, repo_path: str, repo_url: str, repo_name: str,
                           file_batch: List[str], commit: str, branch: str,
                           is_full_indexing: bool) -> Dict[str, Any]:
         """
         Process a batch of files.
         
         Args:
-            wrapper: Agent wrapper with state
             repo_path: Path to the repository
             repo_url: Repository URL
             repo_name: Repository name
@@ -315,9 +303,9 @@ class GitIngestionAgent(Agent):
             
             for file_path in file_batch:
                 # Get file content
-                content = wrapper.git_tool.get_file_content(repo_path, file_path, commit)
+                content = self.git_tool.get_file_content(repo_path, file_path, commit)
                 if content is None:
-                    wrapper.logger.warning(f"Failed to get content for file {file_path}")
+                    self.logger.warning(f"Failed to get content for file {file_path}")
                     continue
                 
                 # Add file data
@@ -349,7 +337,7 @@ class GitIngestionAgent(Agent):
             }
             
             # Call code parser agent
-            tool_response = wrapper.context.get_tool("code_parser_agent")
+            tool_response = self.context.get_tool("code_parser_agent")
             if not tool_response.status.is_success():
                 return {
                     "status": "error",
@@ -373,53 +361,45 @@ class GitIngestionAgent(Agent):
             }
             
         except Exception as e:
-            wrapper.logger.error(f"Error processing file batch: {e}")
+            self.logger.error(f"Error processing file batch: {e}")
             return {
                 "status": "error",
                 "message": f"Error processing file batch: {str(e)}"
             }
     
-    def _load_commit_history(self, wrapper) -> None:
+    def _load_commit_history(self) -> None:
         """
         Load commit history from file.
-        
-        Args:
-            wrapper: Agent wrapper with state
         """
         try:
-            if os.path.exists(wrapper.commit_history_file):
-                with open(wrapper.commit_history_file, "r") as f:
-                    wrapper.commit_history = json.load(f)
-                wrapper.logger.info(f"Loaded commit history for {len(wrapper.commit_history)} repositories")
+            if os.path.exists(self.commit_history_file):
+                with open(self.commit_history_file, "r") as f:
+                    self.commit_history = json.load(f)
+                self.logger.info(f"Loaded commit history for {len(self.commit_history)} repositories")
         except Exception as e:
-            wrapper.logger.error(f"Failed to load commit history: {e}")
-            wrapper.commit_history = {}
+            self.logger.error(f"Failed to load commit history: {e}")
+            self.commit_history = {}
     
-    def _save_commit_history(self, wrapper) -> None:
+    def _save_commit_history(self) -> None:
         """
         Save commit history to file.
-        
-        Args:
-            wrapper: Agent wrapper with state
         """
         try:
-            with open(wrapper.commit_history_file, "w") as f:
-                json.dump(wrapper.commit_history, f)
-            wrapper.logger.info(f"Saved commit history for {len(wrapper.commit_history)} repositories")
+            with open(self.commit_history_file, "w") as f:
+                json.dump(self.commit_history, f)
+            self.logger.info(f"Saved commit history for {len(self.commit_history)} repositories")
         except Exception as e:
-            wrapper.logger.error(f"Failed to save commit history: {e}")
+            self.logger.error(f"Failed to save commit history: {e}")
     
     def poll_repositories(self) -> None:
         """Poll repositories for changes."""
-        # Get wrapper for this agent
-        wrapper = self.get_wrapper()
-        
-        wrapper.logger.info(f"Polling repositories (interval: {wrapper.polling_interval}s)")
+        self.logger.info(f"Polling repositories (interval: {self.polling_interval}s)")
         
         while True:
             # Process repositories
-            self.run(wrapper, {"repositories": wrapper.repositories})
+            self.run({"repositories": self.repositories})
             
             # Sleep until next poll
-            wrapper.logger.info(f"Sleeping for {wrapper.polling_interval} seconds")
-            time.sleep(wrapper.polling_interval)
+            self.logger.info(f"Sleeping for {self.polling_interval} seconds")
+            time.sleep(self.polling_interval)
+            
