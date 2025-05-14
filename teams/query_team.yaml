@@ -1,4 +1,4 @@
-pattern: query_pipeline
+pattern: pipeline
 description: "Code search query pipeline"
 agents:
   - query_agent

@@ -8,8 +8,8 @@ from typing import Dict, Any, List
 
 from code_indexer.agents.answer_composer_agent import AnswerComposerAgent
 
-from google.adk.api.agent import AgentContext, HandlerResponse
-from google.adk.api.tool import ToolResponse
+from google.adk.tools.google_api_tool import AgentContext, HandlerResponse
+from google.adk.tools.google_api_tool import ToolResponse
 
 
 @pytest.fixture

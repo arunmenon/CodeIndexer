@@ -14,9 +14,9 @@ import argparse
 from typing import Dict, Any, List, Optional
 
 # Import the direct implementations
-from direct_git_ingestion import DirectGitIngestionRunner
-from direct_code_parser import DirectCodeParserRunner
-from enhanced_graph_builder import EnhancedGraphBuilderRunner
+from code_indexer.ingestion.direct.git_ingestion import DirectGitIngestionRunner
+from code_indexer.ingestion.direct.code_parser import DirectCodeParserRunner
+from code_indexer.ingestion.direct.enhanced_graph_builder import EnhancedGraphBuilderRunner
 
 
 def setup_logging(verbose: bool = False) -> None:

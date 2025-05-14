@@ -47,6 +47,8 @@ def mock_agent_context():
     mock_git_tool.clone_repository.return_value = (True, "/path/to/repo")
     mock_git_tool.get_changed_files.return_value = {"file1.py": "A", "file2.py": "M"}
     mock_git_tool.get_file_content.return_value = "def sample_function(): pass"
+    mock_git_tool.filter_indexable_files.return_value = ["file1.py", "file2.py"]
+    mock_git_tool.get_commit_info.return_value = {"hash": "abc123"}
     
     mock_ast_extractor = MagicMock()
     mock_ast_extractor.extract_ast.return_value = {
@@ -66,12 +68,15 @@ def mock_agent_context():
     }
     
     mock_neo4j_tool = MagicMock()
+    mock_neo4j_tool.execute_cypher.return_value = [{"name": "sample"}]
     mock_neo4j_tool.execute_query.return_value = MagicMock(
         status=MagicMock(is_success=lambda: True),
-        data={"results": []}
+        data={"results": [{"name": "sample"}]}
     )
+    mock_neo4j_tool.connect.return_value = True
     
     mock_embedding_tool = MagicMock()
+    mock_embedding_tool.embed_texts.return_value = [[0.1, 0.2, 0.3]]
     mock_embedding_tool.generate_embedding.return_value = MagicMock(
         status=MagicMock(is_success=lambda: True),
         data={"embedding": [0.1, 0.2, 0.3]}
@@ -90,7 +95,13 @@ def mock_agent_context():
             "ast_extractor_tool": mock_ast_extractor,
             "neo4j_tool": mock_neo4j_tool,
             "embedding_tool": mock_embedding_tool,
-            "vector_store": mock_vector_store
+            "vector_store": mock_vector_store,
+            "code_parser_agent": MagicMock(
+                run=lambda x: MagicMock(
+                    status=MagicMock(is_success=lambda: True),
+                    data={"parsed_files": 1}
+                )
+            )
         }
         
         tool = tool_map.get(tool_name, MagicMock())
@@ -100,7 +111,13 @@ def mock_agent_context():
         )
     
     mock.get_tool.side_effect = get_mock_tool
-    mock.state = {}
+    mock.state = {"config": {}}
+    
+    # Add run method for mocks
+    mock.run = lambda x: MagicMock(
+        status=MagicMock(is_success=lambda: True),
+        data={"results": []}
+    )
     
     return mock
 

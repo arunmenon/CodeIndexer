@@ -1,4 +1,4 @@
-pattern: indexing_pipeline
+pattern: pipeline
 description: "Code indexing pipeline for repository processing"
 agents:
   - git_ingestion_agent

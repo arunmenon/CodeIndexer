@@ -41,7 +41,7 @@ The graph represents code as a network of interconnected entities:
 
 ### Enhanced Placeholder-Based Resolution (CRITICAL UPGRADE)
 
-**Key Insight**: Maintain permanent placeholder nodes for calls and imports, with subsequent resolution phases.
+**Key Insight**: Maintain permanent placeholder nodes for calls and imports, with subsequent resolution phases, using Neo4j itself as the symbol table without external caching.
 
 #### Placeholder Pattern Benefits:
 - Complete call graph even with unresolved elements
@@ -50,6 +50,15 @@ The graph represents code as a network of interconnected entities:
 - Simpler query patterns
 - Accurate dead code detection
 - Supports dynamic resolution in dynamic languages
+- No external caching service required
+
+#### Resolution Approach Selection:
+
+| Repository Size  | Recommended Approach | Memory Usage | Performance Characteristics |
+|------------------|----------------------|--------------|----------------------------|
+| ≤ 2M definitions | Pure Cypher Join     | Minimal      | ~30s for full repo resolution |
+| 2-5M definitions | In-Process Hash Map  | ~25 bytes/def | ~5s for full repo resolution |
+| >5M definitions  | Label-Sharded Index  | Minimal      | Scales linearly with unresolved placeholders |
 
 #### Implementation Approach:
 
@@ -161,7 +170,10 @@ def extract_function_calls(ast_node, function_id, file_id):
 
 ### Resolution Phase
 
-After all files are processed:
+After all files are processed, use one of the following optimized approaches:
+
+#### A. Pure Cypher Join (Simplest, For Repos ≤ 2M Definitions)
+
 ```python
 def resolve_relationships(neo4j_tool, repository):
     # Resolve function calls in batches
@@ -169,14 +181,108 @@ def resolve_relationships(neo4j_tool, repository):
         result = neo4j_tool.execute_cypher("""
         MATCH (c:CallSite {repo: $repo, resolved: false})
         WITH c LIMIT 5000
-        MATCH (f:Function {name: c.target_name, repo: $repo})
-        SET c.resolved = true
-        MERGE (c)-[:RESOLVES_TO]->(f)
-        RETURN count(*) as resolved
+        OPTIONAL MATCH (d {repo: $repo, symbol_fqn: c.target_name})
+        FOREACH (_ IN CASE WHEN d IS NULL THEN [] ELSE [1] END |
+            SET c.resolved = true,
+                c.target_fq = d.symbol_fqn
+            CREATE (c)-[:RESOLVES_TO]->(d)
+        )
+        RETURN count(c) as processed
         """, {"repo": repository})
         
-        resolved_count = result[0]["resolved"] if result else 0
-        if resolved_count == 0:
+        processed_count = result[0]["processed"] if result else 0
+        if processed_count == 0:
+            break
+```
+
+#### B. In-Process Hash Map (For Larger Repos, 2-5M Definitions)
+
+```python
+def resolve_relationships(neo4j_tool, repository):
+    # Build symbol map in memory
+    symbol_map = {}
+    symbol_result = neo4j_tool.execute_cypher("""
+    MATCH (d {repo: $repo}) 
+    WHERE exists(d.symbol_fqn)
+    RETURN d.symbol_fqn AS name, id(d) AS node_id
+    """, {"repo": repository})
+    
+    # Create lookup map
+    for record in symbol_result:
+        symbol_map[record["name"]] = record["node_id"]
+    
+    # Process in batches
+    batch_size = 5000
+    while True:
+        batch = neo4j_tool.execute_cypher("""
+        MATCH (c:CallSite {repo: $repo, resolved: false})
+        RETURN id(c) AS call_id, c.target_name AS name 
+        LIMIT $batch_size
+        """, {"repo": repository, "batch_size": batch_size})
+        
+        if not batch:
+            break
+            
+        # Process each call site in the batch
+        for record in batch:
+            target_name = record["name"]
+            call_id = record["call_id"]
+            
+            if target_name in symbol_map:
+                node_id = symbol_map[target_name]
+                neo4j_tool.execute_cypher("""
+                MATCH (c) WHERE id(c) = $call_id
+                MATCH (d) WHERE id(d) = $node_id
+                SET c.resolved = true, 
+                    c.target_fq = d.symbol_fqn
+                MERGE (c)-[:RESOLVES_TO]->(d)
+                """, {"call_id": call_id, "node_id": node_id})
+```
+
+#### C. Label-Sharded Index (For Massive Repos > 5M Definitions)
+
+During definition creation, create lightweight index nodes:
+```python
+def create_definition_with_index(neo4j_tool, def_props, def_type):
+    # Create the definition node
+    result = neo4j_tool.execute_cypher("""
+    CREATE (d:%s $props)
+    RETURN id(d) as node_id
+    """ % def_type, {"props": def_props})
+    
+    node_id = result[0]["node_id"]
+    
+    # Create the index node
+    neo4j_tool.execute_cypher("""
+    MERGE (s:SymIndex {repo: $repo, name: $fqn})
+    SET s.target_id = $node_id
+    """, {
+        "repo": def_props["repo"],
+        "fqn": def_props["symbol_fqn"], 
+        "node_id": node_id
+    })
+    
+    return node_id
+```
+
+Resolution phase:
+```python
+def resolve_relationships(neo4j_tool, repository):
+    # Resolve via the index nodes
+    while True:
+        result = neo4j_tool.execute_cypher("""
+        MATCH (c:CallSite {repo: $repo, resolved: false})
+        WITH c LIMIT 5000
+        MATCH (s:SymIndex {repo: $repo, name: c.target_name})
+        MATCH (d) WHERE id(d) = s.target_id
+        SET c.resolved = true,
+            c.target_fq = d.symbol_fqn
+        MERGE (c)-[:RESOLVES_TO]->(d)
+        RETURN count(c) as processed
+        """, {"repo": repository})
+        
+        processed_count = result[0]["processed"] if result else 0
+        if processed_count == 0:
             break
 ```
 
@@ -189,6 +295,12 @@ CREATE INDEX file_repo_path IF NOT EXISTS FOR (f:File) ON (f.repository, f.path)
 CREATE INDEX function_name IF NOT EXISTS FOR (f:Function) ON (f.name, f.repository);
 CREATE INDEX class_name IF NOT EXISTS FOR (c:Class) ON (c.name, c.repository);
 CREATE INDEX callsite_target IF NOT EXISTS FOR (c:CallSite) ON (c.target_name, c.repository, c.resolved);
+
+# For resolver optimization
+CREATE INDEX sym_by_repo_name IF NOT EXISTS FOR (d:Function|Class) ON (d.repo, d.symbol_fqn);
+
+# For option C (label-sharded index)
+CREATE INDEX sym_index IF NOT EXISTS FOR (s:SymIndex) ON (s.repo, s.name);
 ```
 
 ### Query Patterns for Common Operations
@@ -213,10 +325,13 @@ RETURN f.name, f.file_path
 | Enhancement                                       | Priority | Complexity | Value |
 |---------------------------------------------------|----------|------------|-------|
 | Implement CallSite/ImportSite placeholders        | High     | Medium     | High  |
-| Add two-phase resolution                          | High     | Medium     | High  |
+| Add optimized two-phase resolution                | High     | Medium     | High  |
+| Implement composite Neo4j index for symbol lookup | High     | Low        | High  |
 | Improve inheritance relationship tracking         | Medium   | Medium     | Medium|
 | Add variable usage tracking                       | Medium   | High       | Medium|
 | Implement module dependency analysis              | Medium   | Medium     | High  |
+| Implement symbol map for large repos (option B)   | Medium   | Low        | High  |
+| Add label-sharded index for massive repos (option C) | Low   | Medium     | Medium|
 | Create time-series snapshots of graph changes     | Low      | High       | Medium|
 
 ## References
