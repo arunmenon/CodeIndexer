@@ -28,7 +28,7 @@ def detect_dead_code(neo4j_config: Dict[str, str], repository: str) -> Dict[str,
     
     try:
         # Initialize Neo4j connection
-        from ingestion_pipeline.direct_neo4j_tool import DirectNeo4jTool
+        from code_indexer.ingestion.direct.neo4j_tool import DirectNeo4jTool
         
         neo4j_tool = DirectNeo4jTool(
             uri=neo4j_config.get("uri", "bolt://localhost:7687"),
