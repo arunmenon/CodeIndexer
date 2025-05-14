@@ -26,10 +26,13 @@ Handles repository cloning and file extraction, with support for:
 
 ### DirectCodeParserRunner
 Parses code files into Abstract Syntax Trees (ASTs), with support for:
-- Multiple programming languages
+- Multiple programming languages via Tree-sitter
+- Universal parsing for 50+ languages
+- Consistent AST structure across languages
+- Error-tolerant parsing for malformed code
+- Detailed syntax and semantic information
 - Code structure extraction
 - Metadata attachment
-- Error handling for invalid code
 
 ### DirectGraphBuilderRunner
 Builds a graph representation in Neo4j, with support for:
@@ -40,6 +43,26 @@ Builds a graph representation in Neo4j, with support for:
 
 ### DirectNeo4jTool
 Provides a direct interface to Neo4j operations without ADK dependencies.
+
+## Setup
+
+### Tree-sitter Installation
+
+This pipeline uses Tree-sitter for robust, language-agnostic code parsing. To set up the necessary language parsers:
+
+```bash
+# Install dependencies
+pip install -r ingestion_pipeline/requirements.txt
+
+# Set up Tree-sitter language parsers (recommended languages)
+./ingestion_pipeline/setup_tree_sitter.py
+
+# Or set up specific languages
+./ingestion_pipeline/setup_tree_sitter.py --languages python,javascript,typescript,java
+
+# Or set up all supported languages
+./ingestion_pipeline/setup_tree_sitter.py --all
+```
 
 ## Usage
 

@@ -6,10 +6,18 @@ A standalone implementation of the code parser process without ADK dependencies.
 
 import os
 import logging
+import json
 from typing import Dict, Any, List, Optional, Tuple, Union
 
-# Import the ASTExtractorTool from the codebase
-from code_indexer.tools.ast_extractor import ASTExtractorTool
+# Import our improved Tree-sitter-based AST extractor
+from ingestion_pipeline.treesitter_ast_extractor import TreeSitterASTExtractor, create_tree_sitter_extractor
+
+# Fallback to the original AST extractor if needed
+try:
+    from code_indexer.tools.ast_extractor import ASTExtractorTool
+    HAS_ORIGINAL_EXTRACTOR = True
+except ImportError:
+    HAS_ORIGINAL_EXTRACTOR = False
 
 
 class DirectCodeParserRunner:
@@ -34,8 +42,26 @@ class DirectCodeParserRunner:
         self.max_file_size = self.config.get("max_file_size", 1024 * 1024)  # 1MB
         self.batch_size = self.config.get("batch_size", 10)
         
-        # Initialize the AST extractor tool
-        self.ast_extractor = ASTExtractorTool(self.config.get("ast_extractor_config", {}))
+        # Initialize the AST extractor tool - prefer Tree-sitter
+        extractor_config = self.config.get("ast_extractor_config", {})
+        use_tree_sitter = self.config.get("use_tree_sitter", True)
+        
+        if use_tree_sitter:
+            try:
+                self.ast_extractor = create_tree_sitter_extractor(extractor_config)
+                self.logger.info("Using Tree-sitter AST extractor")
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize Tree-sitter extractor: {e}")
+                if HAS_ORIGINAL_EXTRACTOR:
+                    self.ast_extractor = ASTExtractorTool(extractor_config)
+                    self.logger.info("Falling back to original AST extractor")
+                else:
+                    raise RuntimeError("No AST extractor available")
+        elif HAS_ORIGINAL_EXTRACTOR:
+            self.ast_extractor = ASTExtractorTool(extractor_config)
+            self.logger.info("Using original AST extractor")
+        else:
+            raise RuntimeError("No AST extractor available")
     
     def run(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
