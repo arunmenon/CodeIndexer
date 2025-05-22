@@ -6,7 +6,6 @@ code in different programming languages.
 """
 
 import os
-import ast
 import logging
 import json
 import tempfile
@@ -32,20 +31,54 @@ class ASTExtractorTool:
         self.config = config
         self.logger = logging.getLogger("ast_extractor_tool")
         
-        # Language parsers
-        self.python_parser = PythonParser()
-        self.tree_sitter_parser = None
-        
-        # Load Tree-sitter if available and configured
+        # Determine which parser to use
         if config.get("use_tree_sitter", True):
+            # Try using our unified tree-sitter implementation first
             try:
-                from .parsers.tree_sitter_parser import TreeSitterParser
-                self.tree_sitter_parser = TreeSitterParser(config.get("tree_sitter_config", {}))
-                self.logger.info("Tree-sitter parser initialized")
-            except ImportError:
-                self.logger.warning("Tree-sitter not available, falling back to built-in parsers")
+                from .parsers.unified_tree_sitter import UnifiedTreeSitterParser, HAS_TREE_SITTER
+                if HAS_TREE_SITTER:
+                    self.parser = UnifiedTreeSitterParser(config.get("tree_sitter_config", {}))
+                    self.logger.info("Using UnifiedTreeSitterParser implementation")
+                else:
+                    # If tree-sitter not available, try the next option
+                    raise ImportError("Tree-sitter not available")
+            except (ImportError, Exception) as e:
+                self.logger.warning(f"Could not use UnifiedTreeSitterParser: {e}")
+                
+                # Fall back to other parsers based on environment variable
+                env_parser = os.environ.get("TREE_SITTER_PARSER")
+                parser_name = config.get("parser_name", "simple_tree_sitter")
+                
+                if env_parser:
+                    parser_name = "simple_tree_sitter" if env_parser == "simple" else "basic_tree_sitter"
+                    self.logger.info(f"Using parser specified in environment: {env_parser}")
+                
+                try:
+                    if parser_name == "simple_tree_sitter":
+                        from .parsers.simple_tree_sitter import SimpleTreeSitterParser
+                        self.parser = SimpleTreeSitterParser(config.get("tree_sitter_config", {}))
+                        self.logger.info("Using SimpleTreeSitterParser implementation")
+                    else:
+                        from .parsers.basic_tree_sitter import BasicTreeSitterParser
+                        self.parser = BasicTreeSitterParser(config.get("tree_sitter_config", {}))
+                        self.logger.info("Using BasicTreeSitterParser implementation")
+                except (ImportError, Exception) as e:
+                    self.logger.warning(f"Failed to initialize tree-sitter parser: {e}")
+                    # Fall back to native parser
+                    from .native_parser import NativeParser
+                    self.parser = NativeParser(config.get("parser_config", {}))
+                    self.logger.info("Falling back to NativeParser implementation")
+        else:
+            # Explicitly use native parser
+            from .native_parser import NativeParser
+            self.parser = NativeParser(config.get("parser_config", {}))
+            self.logger.info("Using NativeParser implementation with built-in ast module and regex-based parsers")
         
-        # Language detection settings
+        # Log supported languages
+        supported_langs = self.parser.supported_languages()
+        self.logger.info(f"Parser supported languages: {', '.join(supported_langs)}")
+        
+        # Language detection settings (updated from native parser)
         self.language_extensions = config.get("language_extensions", {
             ".py": "python",
             ".js": "javascript",
@@ -64,9 +97,6 @@ class ASTExtractorTool:
             ".hpp": "cpp",
             ".rs": "rust"
         })
-        
-        # Fall back to Python parser for unsupported languages
-        self.fallback_to_text = config.get("fallback_to_text", True)
     
     def extract_ast(self, code: str, language: Optional[str] = None, 
                   file_path: Optional[str] = None) -> Dict[str, Any]:
@@ -83,30 +113,15 @@ class ASTExtractorTool:
         """
         # Detect language if not provided
         if not language and file_path:
-            language = self._detect_language(file_path)
+            language = self.parser.detect_language(file_path)
         
         # If still no language, try to detect from code
-        if not language:
+        if not language or language == "unknown":
             language = self._detect_language_from_code(code)
             self.logger.info(f"Detected language from code: {language}")
         
-        # Extract AST based on language
-        if language == "python":
-            ast_dict = self.python_parser.parse(code)
-        elif self.tree_sitter_parser and language in self.tree_sitter_parser.supported_languages():
-            ast_dict = self.tree_sitter_parser.parse(code, language)
-        else:
-            self.logger.warning(f"Unsupported language: {language}")
-            if self.fallback_to_text:
-                # Fall back to text representation
-                ast_dict = self._create_text_representation(code, language)
-            else:
-                ast_dict = {"error": f"Unsupported language: {language}"}
-        
-        # Add metadata
-        ast_dict["language"] = language
-        if file_path:
-            ast_dict["file_path"] = file_path
+        # Parse the code using our native parser
+        ast_dict = self.parser.parse(code, language, file_path)
         
         return ast_dict
     
@@ -122,16 +137,27 @@ class ASTExtractorTool:
             Dictionary containing the AST in a standardized format
         """
         try:
-            # Read file content
-            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-                code = f.read()
-            
             # Detect language if not provided
             if not language:
-                language = self._detect_language(file_path)
+                language = self.parser.detect_language(file_path)
             
-            # Extract AST
-            return self.extract_ast(code, language, file_path)
+            # Check if parser supports direct file parsing
+            if hasattr(self.parser, 'parse_file'):
+                return self.parser.parse_file(file_path)
+            else:
+                # Fallback to reading the file and parsing the content
+                self.logger.debug(f"Parser doesn't have parse_file method, reading file contents")
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        code = f.read()
+                    return self.parser.parse(code, language, file_path)
+                except UnicodeDecodeError:
+                    # Try with a different encoding for binary files
+                    self.logger.warning(f"Unicode decode error for {file_path}, skipping")
+                    return {
+                        "error": f"Unable to decode file as text: {file_path}",
+                        "file_path": file_path
+                    }
             
         except Exception as e:
             self.logger.error(f"Failed to extract AST from file {file_path}: {e}")
@@ -140,20 +166,6 @@ class ASTExtractorTool:
                 "file_path": file_path,
                 "language": language or "unknown"
             }
-    
-    def _detect_language(self, file_path: str) -> str:
-        """
-        Detect programming language from file path.
-        
-        Args:
-            file_path: Path to the source file
-            
-        Returns:
-            Detected language or 'unknown'
-        """
-        ext = os.path.splitext(file_path)[1].lower()
-        language = self.language_extensions.get(ext, "unknown")
-        return language
     
     def _detect_language_from_code(self, code: str) -> str:
         """
@@ -179,35 +191,6 @@ class ASTExtractorTool:
         
         # Default to unknown
         return "unknown"
-    
-    def _create_text_representation(self, code: str, language: str) -> Dict[str, Any]:
-        """
-        Create a simple text-based AST representation.
-        
-        Args:
-            code: Source code
-            language: Programming language
-            
-        Returns:
-            Dictionary with simple text-based AST
-        """
-        lines = code.splitlines()
-        nodes = []
-        
-        for i, line in enumerate(lines):
-            if line.strip():  # Skip empty lines
-                nodes.append({
-                    "type": "line",
-                    "content": line,
-                    "line_number": i + 1
-                })
-        
-        return {
-            "type": "text",
-            "language": language,
-            "node_count": len(nodes),
-            "nodes": nodes
-        }
 
 
 class PythonParser:
