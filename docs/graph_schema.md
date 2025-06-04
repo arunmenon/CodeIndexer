@@ -4,6 +4,34 @@
 
 The Code Knowledge Graph represents code structure, relationships, and semantics in a Neo4j graph database. The schema includes nodes for code entities (files, classes, functions) as well as placeholders for cross-file relationships (call sites, import sites).
 
+## Graph Structure Visualization
+
+```
+                           ┌───────────┐
+                           │   File    │
+                           └───┬───────┘
+                               │
+                               │ CONTAINS
+                               ▼
+       ┌───────────────┬───────────────┬───────────────┐
+       │               │               │               │
+       ▼               ▼               ▼               ▼
+┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐
+│   Class    │  │  Function  │  │ ImportSite │  │  CallSite  │
+└──────┬─────┘  └─────┬──────┘  └─────┬──────┘  └─────┬──────┘
+       │              │               │               │
+       │ CONTAINS     │ CONTAINS      │ RESOLVES_TO   │ RESOLVES_TO
+       ▼              ▼               │               │
+┌────────────┐  ┌────────────┐        │               │
+│  Function  │  │  CallSite  │        │               │
+└─────┬──────┘  └────────────┘        │               │
+       │                              │               │
+       │ INHERITS_FROM                ▼               ▼
+       │                        ┌────────────┐  ┌────────────┐
+       └─────────────────────► │   Import   │  │  Function  │
+                               └────────────┘  └────────────┘
+```
+
 ## Node Types
 
 ### Core Entities
@@ -42,7 +70,199 @@ The Code Knowledge Graph represents code structure, relationships, and semantics
 | `RESOLVES_TO` | `CallSite` | `Function` | Call site resolution | `score`, `timestamp` |
 | `RESOLVES_TO` | `ImportSite` | `Class`, `Function` | Import site resolution | `score`, `timestamp` |
 
-## Additional Properties
+## Real-World Examples
+
+### Example 1: Simple Function Call
+
+**Python Code:**
+```python
+# file: math_utils.py
+def add(a, b):
+    return a + b
+
+# file: calculator.py
+from math_utils import add
+
+def calculate_sum(x, y):
+    return add(x, y)
+```
+
+**Graph Representation:**
+```
+(File:math_utils.py) -CONTAINS-> (Function:add)
+(File:calculator.py) -CONTAINS-> (Function:calculate_sum)
+(File:calculator.py) -CONTAINS-> (ImportSite:math_utils.add)
+(File:calculator.py) -CONTAINS-> (CallSite:add)
+(Function:calculate_sum) -CONTAINS-> (CallSite:add)
+(ImportSite:math_utils.add) -RESOLVES_TO-> (Function:add)
+(CallSite:add) -RESOLVES_TO-> (Function:add)
+```
+
+**Visualization:**
+```
+┌────────────────────┐           ┌────────────────────┐
+│  File:math_utils.py│           │ File:calculator.py │
+└──────────┬─────────┘           └──────────┬─────────┘
+           │                                │
+           │ CONTAINS                       │ CONTAINS
+           ▼                                ▼
+┌────────────────────┐      ┌─────────────────────────────┐
+│   Function:add     │      │    Function:calculate_sum   │
+└────────────────────┘      └───────────────┬─────────────┘
+           ▲                                │
+           │                                │ CONTAINS
+           │                                ▼
+           │                      ┌────────────────────┐
+           │                      │   CallSite:add     │
+           │                      └──────────┬─────────┘
+           │                                 │
+           └─────────────────────────────────┘
+                      RESOLVES_TO
+```
+
+### Example 2: Class Inheritance with Method Calls
+
+**Python Code:**
+```python
+# file: base.py
+class Animal:
+    def speak(self):
+        pass
+
+# file: dog.py
+from base import Animal
+
+class Dog(Animal):
+    def speak(self):
+        return "Woof!"
+    
+    def bark(self):
+        return self.speak()
+
+# file: main.py
+from dog import Dog
+
+def create_dog():
+    dog = Dog()
+    sound = dog.speak()
+    return sound
+```
+
+**Graph Representation (simplified):**
+```
+(File:base.py) -CONTAINS-> (Class:Animal)
+(Class:Animal) -CONTAINS-> (Function:speak)
+
+(File:dog.py) -CONTAINS-> (Class:Dog)
+(Class:Dog) -INHERITS_FROM-> (Class:Animal)
+(Class:Dog) -CONTAINS-> (Function:speak)
+(Class:Dog) -CONTAINS-> (Function:bark)
+(Function:bark) -CONTAINS-> (CallSite:speak)
+(CallSite:speak) -RESOLVES_TO-> (Function:speak)
+
+(File:main.py) -CONTAINS-> (Function:create_dog)
+(Function:create_dog) -CONTAINS-> (CallSite:Dog)
+(Function:create_dog) -CONTAINS-> (CallSite:speak)
+(CallSite:Dog) -RESOLVES_TO-> (Class:Dog)
+(CallSite:speak) -RESOLVES_TO-> (Function:speak)
+```
+
+**Visualization of Class Hierarchy:**
+```
+┌────────────┐
+│ Class:Animal│
+└──────┬─────┘
+       │
+       │ INHERITS_FROM
+       │
+       ▼
+┌────────────┐
+│ Class:Dog  │
+└────────────┘
+```
+
+## Function Call Resolution Flow
+
+When a function call is detected in the code, it goes through the following resolution process:
+
+```
+┌───────────┐     ┌───────────────┐     ┌───────────────┐     ┌───────────────┐
+│  Parse    │────►│ Create        │────►│ Create        │────►│ Resolve       │
+│  AST      │     │ Function Node │     │ CallSite Node │     │ Relationships │
+└───────────┘     └───────────────┘     └───────────────┘     └───────────────┘
+                                                                     │
+                                                                     ▼
+┌────────────────────┐     ┌───────────────┐     ┌───────────────┐
+│ Update Score       │◄────│ Handle        │◄────│ Find Matching │
+│ & Timestamp        │     │ Ambiguity     │     │ Function      │
+└────────────────────┘     └───────────────┘     └───────────────┘
+```
+
+## Cross-File Resolution Example
+
+Consider a real-world Python project with multiple files:
+
+**models.py**:
+```python
+class User:
+    def __init__(self, username):
+        self.username = username
+    
+    def validate(self):
+        return len(self.username) > 3
+```
+
+**services.py**:
+```python
+from models import User
+from utils import format_username
+
+def create_user(raw_username):
+    formatted_name = format_username(raw_username)
+    user = User(formatted_name)
+    if user.validate():
+        return user
+    return None
+```
+
+**utils.py**:
+```python
+def format_username(username):
+    return username.strip().lower()
+```
+
+**Graph Data Model Visualization:**
+```
+┌───────────────┐           ┌───────────────┐            ┌───────────────┐
+│ File:models.py│           │File:services.py│           │ File:utils.py │
+└───────┬───────┘           └───────┬───────┘           └───────┬───────┘
+        │                           │                           │
+        │                           │                           │
+        ▼                           ▼                           ▼
+┌───────────────┐           ┌───────────────┐           ┌───────────────┐
+│   Class:User  │           │    Function:  │           │   Function:   │
+└───────┬───────┘           │  create_user  │           │format_username│
+        │                   └───────┬───────┘           └───────┬───────┘
+        │                           │                           │
+        ▼                           │                           │
+┌───────────────┐                   │                           │
+│   Function:   │◄──────────────────┘                           │
+│   validate    │        RESOLVES_TO                            │
+└───────────────┘                                               │
+        ▲                                                       │
+        │                                                       │
+        │                   ┌───────────────┐                   │
+        └───────────────────┤  CallSite:    │                   │
+              RESOLVES_TO   │   validate    │                   │
+                            └───────────────┘                   │
+                                                                │
+                            ┌───────────────┐                   │
+                            │  CallSite:    │                   │
+                            │format_username│◄──────────────────┘
+                            └───────────────┘      RESOLVES_TO
+```
+
+## Node Properties Details
 
 ### File Node
 
@@ -133,6 +353,38 @@ ImportSite {
 }
 ```
 
+## Placeholder Pattern Implementation Flow
+
+The placeholder pattern resolves cross-file dependencies in two phases:
+
+```
+Phase 1: Creation
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│ Parse Code      │────►│ Create Entity   │────►│ Create          │
+│ and AST         │     │ Nodes           │     │ Placeholder     │
+└─────────────────┘     └─────────────────┘     └─────────────────┘
+                                                        │
+                                                        ▼
+                                              ┌─────────────────┐
+                                              │ Link to         │
+                                              │ Containing      │
+                                              │ Entities        │
+                                              └─────────────────┘
+Phase 2: Resolution
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│ Query for       │────►│ Match Target    │────►│ Create          │
+│ Unresolved      │     │ Entities        │     │ RESOLVES_TO     │
+│ Placeholders    │     │                 │     │ Relationships   │
+└─────────────────┘     └─────────────────┘     └─────────────────┘
+                                                        │
+                                                        ▼
+                                              ┌─────────────────┐
+                                              │ Calculate       │
+                                              │ Confidence      │
+                                              │ Score           │
+                                              └─────────────────┘
+```
+
 ## Indexes and Constraints
 
 ```cypher
@@ -157,7 +409,7 @@ CREATE INDEX IF NOT EXISTS FOR (c:CallSite) ON (c.call_name, c.call_module);
 CREATE INDEX IF NOT EXISTS FOR (i:ImportSite) ON (i.import_name, i.module_name);
 ```
 
-## Sample Queries
+## Sample Queries and Visualizations
 
 ### Getting all calls to a specific function
 
@@ -168,6 +420,20 @@ OPTIONAL MATCH (caller_func:Function)-[:CONTAINS]->(cs)
 RETURN cs.start_line, cs.end_line, caller_func.name
 ```
 
+**Visual Result Example:**
+```
+┌─────────────┐         ┌─────────────┐         ┌─────────────┐
+│ Function:   │◄────────│ CallSite at │◄────────│ Function:   │
+│ process_data│         │ line 42     │         │ handle_data │
+└─────────────┘         └─────────────┘         └─────────────┘
+      ▲                                                ▲
+      │                                                │
+      │                 ┌─────────────┐                │
+      └─────────────────┤ CallSite at │◄───────────────┘
+                        │ line 87     │
+                        └─────────────┘
+```
+
 ### Finding dead code (functions with no callers)
 
 ```cypher
@@ -176,6 +442,21 @@ WHERE NOT EXISTS {
   MATCH (cs:CallSite)-[:RESOLVES_TO]->(f)
 }
 RETURN f.name, f.file_id
+```
+
+**Visual Example:**
+```
+┌────────────────┐
+│ File:utils.py  │
+└────────┬───────┘
+         │
+         │ CONTAINS
+         ▼
+┌────────────────┐   ┌───────────────┐
+│Function:       │   │ No CallSites  │
+│unused_function │◄──┤ point to this │
+└────────────────┘   │ function      │
+                     └───────────────┘
 ```
 
 ### Tracking cross-file dependencies
@@ -189,10 +470,48 @@ WHERE caller_file.path <> f.path
 RETURN DISTINCT caller_file.path
 ```
 
+**Visual Example:**
+```
+┌────────────────┐
+│File:           │
+│src/core/auth.py│
+└────────┬───────┘
+         │
+         │ CONTAINS
+         ▼
+┌────────────────┐                 ┌────────────────┐
+│Function:       │◄────────────────┤CallSite in     │
+│authenticate    │   RESOLVES_TO   │other file      │
+└────────────────┘                 └────────┬───────┘
+                                            │
+                                            │ CONTAINS
+                                            ▼
+                                   ┌────────────────┐
+                                   │File:           │
+                                   │src/api/users.py│
+                                   └────────────────┘
+```
+
 ### Finding class hierarchy
 
 ```cypher
 MATCH (c:Class {name: "BaseController"})
 MATCH path = (subclass:Class)-[:INHERITS_FROM*]->(c)
 RETURN path
+```
+
+**Visual Example:**
+```
+┌────────────────┐
+│Class:          │
+│BaseController  │
+└────────┬───────┘
+         ▲
+         │ INHERITS_FROM
+         │
+┌────────┴───────┐         ┌────────────────┐
+│Class:          │◄────────┤Class:          │
+│UserController  │         │AdminController │
+└────────────────┘         └────────────────┘
+                             INHERITS_FROM
 ```
