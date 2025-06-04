@@ -82,6 +82,7 @@ docs/
 ├── graph_schema.md          # Neo4j schema and relationships
 ├── placeholder_pattern.md   # Cross-file resolution technique
 ├── troubleshooting.md       # Common issues and solutions
+├── codebase_structure.md    # Project organization and modules
 └── index.md                 # This document
 ```
 

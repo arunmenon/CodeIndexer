@@ -51,6 +51,22 @@ Each stage can be run independently or as part of an end-to-end process:
 
 For detailed information, see [Ingestion Flow Documentation](docs/ingestion-flow.md).
 
+## Project Structure
+
+The codebase is organized into the following major modules:
+
+- **`agents/`**: LLM-powered agents for intelligent code search and reasoning
+- **`api/`**: REST API endpoints for programmatic access to search functionality
+- **`cli/`**: Command-line interfaces for indexing and searching code
+- **`config/`**: Configuration files and settings management
+- **`ingestion/`**: Core pipeline for code extraction, parsing, and indexing
+- **`models/`**: Data models and schema definitions
+- **`semantic/`**: Components for higher-level semantic understanding of code
+- **`tools/`**: Low-level utilities and integrations with external systems
+- **`utils/`**: Helper functions and common utilities used throughout the codebase
+
+For a detailed breakdown of each module, see the [Codebase Structure Documentation](docs/codebase_structure.md).
+
 ## Usage
 
 ### Basic Commands
@@ -83,6 +99,7 @@ python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/repo --re
 - [Placeholder Pattern](docs/placeholder_pattern.md): Information about the cross-file resolution approach
 - [Graph Schema](docs/graph_schema.md): Neo4j graph database schema
 - [Troubleshooting](docs/troubleshooting.md): Solutions for common issues and errors
+- [Codebase Structure](docs/codebase_structure.md): Detailed overview of project organization
 
 ## Prerequisites
 
