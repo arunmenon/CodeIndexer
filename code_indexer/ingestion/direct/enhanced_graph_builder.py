@@ -853,9 +853,9 @@ class EnhancedGraphBuilderRunner(DirectGraphBuilderRunner):
             WITH cs, f, 
                  CASE WHEN f.file_id = cs.caller_file_id THEN 1.0 ELSE 0.7 END as score
             ORDER BY cs.id, score DESC
-            WITH cs, collect({{f: f, score: score}})[0] as best_match
-            MERGE (cs)-[r:RESOLVES_TO]->(best_match.f)
-            SET r.score = best_match.score, r.timestamp = timestamp()
+            WITH cs, collect(f)[0] as best_function, collect(score)[0] as best_score
+            MERGE (cs)-[r:RESOLVES_TO]->(best_function)
+            SET r.score = best_score, r.timestamp = timestamp()
             RETURN count(r) as resolved_calls
             """
             
@@ -1115,10 +1115,10 @@ class EnhancedGraphBuilderRunner(DirectGraphBuilderRunner):
             WITH cs, si, 
                  CASE WHEN si.file_id = cs.caller_file_id THEN 1.0 ELSE 0.7 END as score
             ORDER BY cs.id, score DESC
-            WITH cs, collect({{si: si, score: score}})[0] as best_match
-            MATCH (f) WHERE id(f) = best_match.si.target_id
+            WITH cs, collect(si)[0] as best_si, collect(score)[0] as best_score
+            MATCH (f) WHERE id(f) = best_si.target_id
             MERGE (cs)-[r:RESOLVES_TO]->(f)
-            SET r.score = best_match.score, r.timestamp = timestamp()
+            SET r.score = best_score, r.timestamp = timestamp()
             RETURN count(r) as resolved_calls
             """
             

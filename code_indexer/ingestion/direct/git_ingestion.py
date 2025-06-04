@@ -104,6 +104,29 @@ class DirectGitIngestionRunner:
             "repositories_processed": len(processing_results)
         }
     
+    def _normalize_repo_url(self, repo_url: str) -> str:
+        """
+        Normalize repository URL to ensure consistent keys in commit history.
+        
+        Args:
+            repo_url: Repository URL
+            
+        Returns:
+            Normalized repository URL
+        """
+        # If it's a local path, ensure it's an absolute path
+        if repo_url.startswith("./") or repo_url.startswith("../"):
+            repo_url = os.path.abspath(repo_url)
+        
+        # Remove trailing slashes
+        repo_url = repo_url.rstrip("/")
+        
+        # Remove .git suffix if present
+        if repo_url.endswith(".git"):
+            repo_url = repo_url[:-4]
+            
+        return repo_url
+    
     def _process_repository(self, repo_url: str, branch: str, repo_name: str,
                          mode: str, force_reindex: bool) -> Dict[str, Any]:
         """
@@ -121,9 +144,17 @@ class DirectGitIngestionRunner:
         """
         self.logger.info(f"Processing repository {repo_name} ({repo_url})")
         
+        # Normalize repository URL for consistent lookup
+        normalized_url = self._normalize_repo_url(repo_url)
+        self.logger.info(f"Normalized repository URL: {normalized_url}")
+        
         # Clone or update repository
+        self.logger.info(f"Cloning/updating repository {repo_url} with branch {branch}")
         success, repo_path = self.git_tool.clone_repository(repo_url, branch)
+        self.logger.info(f"Clone result: success={success}, repo_path={repo_path}")
+        
         if not success:
+            self.logger.error(f"Failed to clone repository: {repo_url}")
             return {
                 "repository": repo_name,
                 "url": repo_url,
@@ -142,34 +173,51 @@ class DirectGitIngestionRunner:
             }
         
         latest_commit = latest_commit_info["hash"]
+        self.logger.info(f"Latest commit: {latest_commit}")
         
-        # Get last indexed commit
-        last_indexed_commit = self.commit_history.get(repo_url)
-        
+        # Get last indexed commit - also check for the repository path as key
+        last_indexed_commit = self.commit_history.get(normalized_url)
+        if not last_indexed_commit:
+            # Try with repo_path as fallback
+            last_indexed_commit = self.commit_history.get(repo_path)
+            
+        if last_indexed_commit:
+            self.logger.info(f"Last indexed commit: {last_indexed_commit}")
+            
         # Check if reindexing is needed
         if mode == "full" or force_reindex or not last_indexed_commit:
             # Full indexing
+            self.logger.info("Performing full indexing")
             changed_files = self._get_all_files(repo_path)
             is_full_indexing = True
         else:
             # Incremental indexing
+            self.logger.info(f"Performing incremental indexing from {last_indexed_commit} to {latest_commit}")
             changed_files_map = self.git_tool.get_changed_files(
                 repo_path, base_commit=last_indexed_commit, head_commit=latest_commit
             )
             
-            # Filter out deleted files
-            changed_files = [
-                file_path for file_path, change_type in changed_files_map.items()
-                if change_type != "D"  # Skip deleted files
-            ]
-            
-            is_full_indexing = False
+            # Check if incremental indexing returned empty results due to commit error
+            if not changed_files_map:
+                self.logger.warning("Incremental indexing returned no files, falling back to full indexing")
+                changed_files = self._get_all_files(repo_path)
+                is_full_indexing = True
+            else:
+                # Filter out deleted files
+                changed_files = [
+                    file_path for file_path, change_type in changed_files_map.items()
+                    if change_type != "D"  # Skip deleted files
+                ]
+                is_full_indexing = False
         
         # Filter indexable files
         indexable_files = self.git_tool.filter_indexable_files(repo_path, changed_files)
+        self.logger.info(f"Filtered down to {len(indexable_files)} indexable files")
         
-        # Update commit history
-        self.commit_history[repo_url] = latest_commit
+        # Update commit history with normalized URL
+        self.commit_history[normalized_url] = latest_commit
+        # Also store with repo_path as key for backward compatibility
+        self.commit_history[repo_path] = latest_commit
         
         # If no files to index, return success
         if not indexable_files:

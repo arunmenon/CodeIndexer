@@ -8,9 +8,8 @@ import os
 import logging
 from typing import Dict, Any, List, Optional, Tuple, Union
 
-# Import the ASTExtractorTool from the codebase
-from code_indexer.tools.ast_extractor import ASTExtractorTool
-
+# Import the ASTExtractor from the codebase
+from code_indexer.tools.ast_extractor import ASTExtractor
 
 class DirectCodeParserRunner:
     """
@@ -34,8 +33,8 @@ class DirectCodeParserRunner:
         self.max_file_size = self.config.get("max_file_size", 1024 * 1024)  # 1MB
         self.batch_size = self.config.get("batch_size", 10)
         
-        # Initialize the AST extractor tool
-        self.ast_extractor = ASTExtractorTool(self.config.get("ast_extractor_config", {}))
+        # Initialize the AST extractor
+        self.ast_extractor = ASTExtractor(self.config.get("ast_extractor_config", {}))
     
     def run(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
