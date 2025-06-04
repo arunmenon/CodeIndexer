@@ -403,6 +403,7 @@ class EnhancedGraphBuilderRunner(DirectGraphBuilderRunner):
         self._setup_observers()
     
     def _extract_call_sites(self, ast_root: Dict[str, Any], file_id: str, 
+                          repository: str = "",
                           current_function: Optional[Dict[str, Any]] = None, 
                           current_class: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """
@@ -411,6 +412,7 @@ class EnhancedGraphBuilderRunner(DirectGraphBuilderRunner):
         Args:
             ast_root: Root of the AST
             file_id: ID of the file
+            repository: Repository name
             current_function: Current function context if inside a function
             current_class: Current class context if inside a class
             
@@ -485,11 +487,14 @@ class EnhancedGraphBuilderRunner(DirectGraphBuilderRunner):
             call_info = self._extract_call_info(func, ast_format=ast_format)
             
             if call_info:
-                # Generate a unique ID for the call site
-                # Use repository info if available, otherwise just use file_id
-                repo_identifier = ast_root.get("repository", "") or repository
+                # Generate a unique ID for the call site that includes repository information
+                # This ensures uniqueness across repositories even if file paths are similar
+                # Use repository parameter which is passed in from _process_ast method
+                # Also check if repository info is in ast_root as a fallback
+                if not repository:
+                    repository = ast_root.get("repository", "")
                 call_id = hashlib.md5(
-                    f"{repo_identifier}:{file_id}:{start_line}:{start_col}:{call_info['name']}".encode()
+                    f"{repository}:{file_id}:{start_line}:{start_col}:{call_info['name']}".encode()
                 ).hexdigest()
                 
                 # Create call site node
@@ -617,13 +622,14 @@ class EnhancedGraphBuilderRunner(DirectGraphBuilderRunner):
         
         return None
     
-    def _extract_import_sites(self, ast_root: Dict[str, Any], file_id: str) -> List[Dict[str, Any]]:
+    def _extract_import_sites(self, ast_root: Dict[str, Any], file_id: str, repository: str = "") -> List[Dict[str, Any]]:
         """
         Extract import sites from the AST and create placeholder nodes.
         
         Args:
             ast_root: Root of the AST
             file_id: ID of the file
+            repository: Repository name
             
         Returns:
             List of created import site nodes
@@ -694,10 +700,14 @@ class EnhancedGraphBuilderRunner(DirectGraphBuilderRunner):
                 asname = alias.get("asname", "")
                 
                 if name:
-                    # Generate a unique ID for the import site
-                    repo_identifier = ast_root.get("repository", "") or repository
+                    # Generate a unique ID for the import site that includes repository information
+                    # This ensures uniqueness across repositories even if file paths are similar
+                    # Use repository parameter which is passed in from _process_ast method
+                    # Also check if repository info is in ast_root as a fallback
+                    if not repository:
+                        repository = ast_root.get("repository", "")
                     import_id = hashlib.md5(
-                        f"{repo_identifier}:{file_id}:import:{start_line}:{name}".encode()
+                        f"{repository}:{file_id}:import:{start_line}:{name}".encode()
                     ).hexdigest()
                     
                     # Create import site node
@@ -791,10 +801,14 @@ class EnhancedGraphBuilderRunner(DirectGraphBuilderRunner):
                 asname = alias.get("asname", "")
                 
                 if name and module:
-                    # Generate a unique ID for the import site
-                    repo_identifier = ast_root.get("repository", "") or repository
+                    # Generate a unique ID for the import site that includes repository information
+                    # This ensures uniqueness across repositories even if file paths are similar
+                    # Use repository parameter which is passed in from _process_ast method
+                    # Also check if repository info is in ast_root as a fallback
+                    if not repository:
+                        repository = ast_root.get("repository", "")
                     import_id = hashlib.md5(
-                        f"{repo_identifier}:{file_id}:import_from:{start_line}:{module}.{name}".encode()
+                        f"{repository}:{file_id}:import_from:{start_line}:{module}.{name}".encode()
                     ).hexdigest()
                     
                     # Create import site node
@@ -1173,7 +1187,7 @@ class EnhancedGraphBuilderRunner(DirectGraphBuilderRunner):
             WITH cs, f, 
                  CASE WHEN f.file_id = cs.caller_file_id THEN 1.0 ELSE 0.7 END as score
             ORDER BY cs.id, score DESC
-            WITH cs, collect({{f: f, score: score}})[0] as best_match
+            WITH cs, collect({f: f, score: score})[0] as best_match
             WITH cs, best_match.f as target_func, best_match.score as match_score
             MERGE (cs)-[r:RESOLVES_TO]->(target_func)
             SET r.score = match_score, r.timestamp = timestamp()
@@ -1436,10 +1450,10 @@ class EnhancedGraphBuilderRunner(DirectGraphBuilderRunner):
             WITH cs, si, 
                  CASE WHEN si.file_id = cs.caller_file_id THEN 1.0 ELSE 0.7 END as score
             ORDER BY cs.id, score DESC
-            WITH cs, collect({{si: si, score: score}})[0] as best_match
-            MATCH (f) WHERE id(f) = best_match.si.target_id
+            WITH cs, collect(si)[0] as best_si, collect(score)[0] as best_score
+            MATCH (f) WHERE id(f) = best_si.target_id
             MERGE (cs)-[r:RESOLVES_TO]->(f)
-            SET r.score = best_match.score, r.timestamp = timestamp()
+            SET r.score = best_score, r.timestamp = timestamp()
             RETURN count(r) as resolved_calls
             """
             
@@ -1598,74 +1612,18 @@ class EnhancedGraphBuilderRunner(DirectGraphBuilderRunner):
             
             # Process calls with visitor
             if self.create_placeholders:
-                call_visitor = CallVisitor()
-                ast_root.accept(call_visitor)
-                calls = call_visitor.get_result()
+                # Use our direct extraction methods which include repository parameter
+                call_sites = self._extract_call_sites(
+                    ast_root=ast_root,
+                    file_id=file_id,
+                    repository=repository
+                )
                 
-                call_sites = []
-                
-                for call in calls:
-                    # Generate a unique ID for the call site
-                    position = call.get("position", {})
-                    start_line = position.get("start_line", 0)
-                    start_col = position.get("start_column", 0)
-                    
-                    call_id = hashlib.md5(
-                        f"{repository}:{file_id}:{start_line}:{start_col}:{call.get('name', '')}".encode()
-                    ).hexdigest()
-                    
-                    # Create call site node
-                    self.neo4j_tool.create_call_site_node(
-                        call_id=call_id,
-                        caller_file_id=file_id,
-                        caller_function_id=None,  # Could determine this from context
-                        caller_class_id=None,     # Could determine this from context
-                        call_name=call.get("name", ""),
-                        call_module=call.get("object", None),
-                        start_line=start_line,
-                        start_col=start_col,
-                        end_line=position.get("end_line", 0),
-                        end_col=position.get("end_column", 0),
-                        is_attribute_call=call.get("is_attribute", False)
-                    )
-                    
-                    call_sites.append(call_id)
-                    self.graph_stats["call_sites"] += 1
-                
-                # Process imports with visitor
-                import_visitor = ImportVisitor()
-                ast_root.accept(import_visitor)
-                imports = import_visitor.get_result()
-                
-                import_sites = []
-                
-                for imp in imports:
-                    # Generate a unique ID for the import site
-                    position = imp.get("position", {})
-                    start_line = position.get("start_line", 0)
-                    
-                    import_prefix = "import" if not imp.get("is_from_import") else "import_from"
-                    import_name = imp.get("name", "")
-                    module_part = f":{imp.get('module', '')}" if imp.get("is_from_import") else ""
-                    
-                    import_id = hashlib.md5(
-                        f"{repository}:{file_id}:{import_prefix}:{start_line}{module_part}.{import_name}".encode()
-                    ).hexdigest()
-                    
-                    # Create import site node
-                    self.neo4j_tool.create_import_site_node(
-                        import_id=import_id,
-                        file_id=file_id,
-                        import_name=import_name,
-                        module_name=imp.get("module", None),
-                        alias=imp.get("alias", ""),
-                        is_from_import=imp.get("is_from_import", False),
-                        start_line=start_line,
-                        end_line=position.get("end_line", 0)
-                    )
-                    
-                    import_sites.append(import_id)
-                    self.graph_stats["import_sites"] += 1
+                import_sites = self._extract_import_sites(
+                    ast_root=ast_root,
+                    file_id=file_id,
+                    repository=repository
+                )
             else:
                 call_sites = []
                 import_sites = []

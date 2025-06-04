@@ -66,24 +66,38 @@ class GitTool:
                 repo_name = repo_url.split("/")[-1].replace(".git", "")
                 repo_dir = os.path.join(self.workspace_dir, repo_name)
             
+            self.logger.info(f"Repository dir: {repo_dir}")
+            
+            # Ensure the workspace directory exists
+            os.makedirs(self.workspace_dir, exist_ok=True)
+            
             # Check if repo already exists
             if os.path.exists(repo_dir):
                 self.logger.info(f"Repository already exists at {repo_dir}")
-                repo = Repo(repo_dir)
-                
-                # Fetch latest changes
-                self.logger.info(f"Fetching latest changes from {repo_url}")
-                for remote in repo.remotes:
-                    remote.fetch()
-                
-                # Checkout the specified branch
-                self.logger.info(f"Checking out branch {branch}")
-                repo.git.checkout(branch)
-                
-                # Pull latest changes
-                repo.git.pull()
-                
-                return True, repo_dir
+                try:
+                    repo = Repo(repo_dir)
+                    
+                    # Fetch latest changes
+                    self.logger.info(f"Fetching latest changes from {repo_url}")
+                    for remote in repo.remotes:
+                        self.logger.info(f"Fetching from remote: {remote.name}")
+                        remote.fetch()
+                    
+                    # Checkout the specified branch
+                    self.logger.info(f"Checking out branch {branch}")
+                    repo.git.checkout(branch)
+                    
+                    # Pull latest changes
+                    self.logger.info(f"Pulling latest changes")
+                    repo.git.pull()
+                    
+                    return True, repo_dir
+                except Exception as inner_e:
+                    self.logger.error(f"Error updating existing repository: {inner_e}")
+                    # If updating fails, try fresh clone after removing
+                    import shutil
+                    self.logger.info(f"Removing {repo_dir} for fresh clone")
+                    shutil.rmtree(repo_dir, ignore_errors=True)
             
             # Clone the repository
             self.logger.info(f"Cloning repository {repo_url} to {repo_dir}")
@@ -94,6 +108,8 @@ class GitTool:
             
         except Exception as e:
             self.logger.error(f"Failed to clone repository: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
             return False, ""
     
     def get_changed_files(self, repo_path: str, base_commit: Optional[str] = None, 
@@ -124,8 +140,32 @@ class GitTool:
                 else:
                     base_commit = "HEAD~1"
             
+            # Check if base_commit exists in this repository
+            try:
+                # Try to get the commit object to verify it exists
+                repo.commit(base_commit)
+            except Exception as commit_error:
+                self.logger.warning(f"Base commit {base_commit} not found in repository: {commit_error}")
+                self.logger.info("Falling back to full indexing by returning all files")
+                
+                # Return all files as "Added" to trigger full indexing
+                changes = {}
+                for file_path in repo.git.ls_files().splitlines():
+                    changes[file_path] = "A"  # Mark as added
+                return changes
+            
             # Get diff between commits
-            diff_index = repo.git.diff("--name-status", base_commit, head_commit)
+            try:
+                diff_index = repo.git.diff("--name-status", base_commit, head_commit)
+            except Exception as diff_error:
+                self.logger.warning(f"Failed to compare commits {base_commit} and {head_commit}: {diff_error}")
+                self.logger.info("Falling back to full indexing by returning all files")
+                
+                # Return all files as "Added" to trigger full indexing
+                changes = {}
+                for file_path in repo.git.ls_files().splitlines():
+                    changes[file_path] = "A"  # Mark as added
+                return changes
             
             # Parse the diff output
             changes = {}
@@ -160,7 +200,17 @@ class GitTool:
             
         except Exception as e:
             self.logger.error(f"Failed to get changed files: {e}")
-            return {}
+            # Return all files to ensure processing continues
+            try:
+                repo = Repo(repo_path)
+                changes = {}
+                for file_path in repo.git.ls_files().splitlines():
+                    changes[file_path] = "A"  # Mark as added
+                self.logger.info(f"Falling back to full indexing with {len(changes)} files")
+                return changes
+            except Exception as inner_e:
+                self.logger.error(f"Failed to get file list for fallback: {inner_e}")
+                return {}
     
     def get_file_content(self, repo_path: str, file_path: str, 
                        commit: str = "HEAD") -> Optional[str]:

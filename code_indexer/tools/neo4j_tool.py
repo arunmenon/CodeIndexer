@@ -8,10 +8,6 @@ import os
 import logging
 from typing import Dict, List, Any, Optional, Tuple, Union
 
-from google.adk.agents.llm_agent import BaseTool
-from google.adk.agents.llm_agent import ToolContext
-from google.adk.tools.google_api_tool import ToolResponse, ToolStatus
-
 # Import Neo4j conditionally to handle environments without it
 try:
     from neo4j import GraphDatabase, basic_auth
@@ -21,7 +17,7 @@ except ImportError:
     logging.warning("Neo4j driver not installed. Graph functionality will not work.")
 
 
-class Neo4jTool(BaseTool):
+class Neo4jTool:
     """
     Tool for Neo4j graph database operations.
     
@@ -29,17 +25,24 @@ class Neo4jTool(BaseTool):
     stored in Neo4j.
     """
     
-    def __init__(self):
-        """Initialize the Neo4j tool."""
-        super().__init__()
+    def __init__(self, uri=None, user=None, password=None, database=None):
+        """
+        Initialize the Neo4j tool.
+        
+        Args:
+            uri: Neo4j URI (defaults to environment variable or localhost)
+            user: Neo4j username (defaults to environment variable or 'neo4j')
+            password: Neo4j password (defaults to environment variable or 'password')
+            database: Neo4j database name (defaults to environment variable or 'neo4j')
+        """
         self.logger = logging.getLogger(__name__)
         self.driver = None
         
-        # Connection settings from environment variables
-        self.uri = os.environ.get("NEO4J_URI", "bolt://localhost:7687")
-        self.user = os.environ.get("NEO4J_USER", "neo4j")
-        self.password = os.environ.get("NEO4J_PASSWORD", "password")
-        self.database = os.environ.get("NEO4J_DATABASE", "neo4j")
+        # Connection settings from parameters or environment variables
+        self.uri = uri or os.environ.get("NEO4J_URI", "bolt://localhost:7687")
+        self.user = user or os.environ.get("NEO4J_USER", "neo4j")
+        self.password = password or os.environ.get("NEO4J_PASSWORD", "password")
+        self.database = database or os.environ.get("NEO4J_DATABASE", "neo4j")
         
         # Connect to Neo4j
         self.connect()
@@ -322,43 +325,6 @@ class Neo4jTool(BaseTool):
         except Exception as e:
             self.logger.error(f"Error executing Cypher query: {e}")
             raise
-    
-    # ADK Tool methods
-    def execute_query(self, input_data: Dict[str, Any], context: Optional[ToolContext] = None) -> ToolResponse:
-        """
-        Execute a Cypher query through the ADK tool interface.
-        
-        Args:
-            input_data: Dictionary with query and parameters
-            context: Tool context
-            
-        Returns:
-            ToolResponse with query results
-        """
-        query = input_data.get("query", "")
-        params = input_data.get("params", {})
-        database = input_data.get("database", self.database)
-        
-        if not query:
-            return ToolResponse(
-                status=ToolStatus.error("No query provided"),
-                data={"results": []}
-            )
-        
-        try:
-            with self.driver.session(database=database) as session:
-                result = session.run(query, params or {})
-                results = [dict(record) for record in result]
-                
-                return ToolResponse(
-                    status=ToolStatus.success(),
-                    data={"results": results}
-                )
-        except Exception as e:
-            return ToolResponse(
-                status=ToolStatus.error(f"Query execution failed: {str(e)}"),
-                data={"results": []}
-            )
     
     def create_module_node(self, module_id: str, name: str, file_id: str = None) -> str:
         """
