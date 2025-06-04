@@ -43,14 +43,24 @@ class ASTExtractor:
             logger.error(f"Failed to initialize Tree-sitter parser: {e}")
             raise
         
-        # Language detection settings
+        # Language detection settings - using expanded list from main branch
         self.language_extensions = {
             ".py": "python",
             ".js": "javascript",
             ".jsx": "javascript",
             ".ts": "typescript",
             ".tsx": "typescript",
-            ".java": "java"
+            ".java": "java",
+            ".go": "go",
+            ".rb": "ruby",
+            ".php": "php",
+            ".cs": "c_sharp",
+            ".cpp": "cpp",
+            ".cc": "cpp",
+            ".c": "c",
+            ".h": "c",
+            ".hpp": "cpp",
+            ".rs": "rust"
         }
     
     def extract_ast(self, code: str, language: Optional[str] = None, 
@@ -68,11 +78,13 @@ class ASTExtractor:
         """
         # Detect language if not provided
         if not language and file_path:
-            language = self._detect_language(file_path)
+            language = self.parser.detect_language(file_path)
         
         if not language:
-            raise ValueError("Language must be specified or detectable from file_path")
-        
+            # Try to detect from code if still no language (taking from main branch)
+            language = self._detect_language_from_code(code)
+            logger.info(f"Detected language from code: {language}")
+            
         # Parse code using tree-sitter
         ast_dict = self.parser.parse_string(code, language)
         
@@ -102,7 +114,16 @@ class ASTExtractor:
             language = self._detect_language(file_path_str)
         
         # Use tree-sitter parser to parse file
-        return self.parser.parse_file(file_path_str, language)
+        try:
+            ast_dict = self.parser.parse_file(file_path_str, language)
+            return ast_dict
+        except Exception as e:
+            logger.error(f"Failed to extract AST from file {file_path}: {e}")
+            return {
+                "error": str(e),
+                "file_path": file_path_str,
+                "language": language or "unknown"
+            }
     
     def _detect_language(self, file_path: str) -> Optional[str]:
         """
@@ -116,6 +137,31 @@ class ASTExtractor:
         """
         ext = os.path.splitext(file_path)[1].lower()
         return self.language_extensions.get(ext)
+    
+    def _detect_language_from_code(self, code: str) -> str:
+        """
+        Attempt to detect programming language from code content.
+        
+        Args:
+            code: Source code
+            
+        Returns:
+            Detected language or 'unknown'
+        """
+        # Simple heuristics to detect language
+        if code.strip().startswith("<?php"):
+            return "php"
+        elif "function" in code and ("{" in code and "}" in code) and (";" in code):
+            return "javascript"
+        elif "def " in code and ":" in code and "import " in code:
+            return "python"
+        elif "class " in code and "{" in code and "public" in code and ";" in code:
+            return "java"
+        elif "package " in code and "import" in code and "func " in code:
+            return "go"
+        
+        # Default to unknown
+        return "unknown"
 
 
 def create_ast_extractor(config: Dict[str, Any] = None) -> ASTExtractor:
