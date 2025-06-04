@@ -1,161 +1,90 @@
-# Code Indexer
+# CodeIndexer
 
-A powerful code indexing and search system with modular architecture.
+A powerful, scalable code indexing and search system built with a modular architecture.
 
 ## Overview
 
-Code Indexer creates a semantic understanding of codebases by combining AST parsing, graph representation, and vector embeddings to enable natural language search and analysis of code.
+CodeIndexer creates a semantic understanding of codebases by combining AST parsing, graph representation, and vector embeddings to enable natural language search and analysis of code.
 
-## Features
+## Key Features
 
-- **Multi-Language Parsing**: Universal AST extraction using Tree-sitter for 50+ languages
-- **Code Knowledge Graph**: Graph-based representation of code structure and relationships
-- **Vector Embeddings**: Semantic embedding of code chunks for similarity search
-- **Natural Language Search**: Query code using natural language
-- **Flexible Architecture**: Two-tier design with independent ingestion and semantic layers
-- **Cross-File Resolution**: Accurate tracking of call sites and import relationships
+- **Multi-Language Support**: Parses 50+ programming languages using Tree-sitter
+- **Code Knowledge Graph**: Creates a graph representation of code structure and relationships
+- **Cross-File Resolution**: Accurately tracks function calls and imports across files
+- **Incremental Updates**: Efficiently processes code changes without full reindexing
+- **Scalable Architecture**: Handles repositories of any size with optimized strategies
 
-## Architecture
-
-The system follows a two-tier architecture:
-
-### Stage 1: Ingestion Pipeline (Non-Agentic)
-- **Git Ingestion**: Extracts code from repositories
-- **Code Parsing**: Generates AST representations using Tree-sitter
-- **Graph Building**: Creates a knowledge graph in Neo4j
-  - **Placeholder Pattern**: Tracks call sites and import sites as first-class nodes
-  - **Cross-File Resolution**: Creates accurate relationships across file boundaries
-- **Chunking**: Divides code into semantic chunks
-- **Embedding**: Generates vector representations of code chunks
-
-### Stage 2: Semantic Layer (ADK-Based)
-- **Query Processing**: Understands natural language queries
-- **Vector Search**: Retrieves relevant code chunks
-- **Graph Search**: Finds related code structures and relationships
-- **Answer Composition**: Synthesizes search results into coherent answers
-
-## Getting Started
-
-### Prerequisites
-
-- Python 3.8+
-- Neo4j (for graph storage)
-- Milvus or Qdrant (for vector storage)
-
-### Installation
-
-#### Basic Installation (Ingestion Only)
+## Quick Start
 
 ```bash
 # Clone the repository
-git clone https://github.com/arunmenon/CodeIndexer.git
+git clone https://github.com/yourusername/CodeIndexer.git
 cd CodeIndexer
 
-# Install base package
+# Install dependencies
 pip install -e .
 
-# Start Neo4j and Milvus (optional)
-docker-compose up -d neo4j milvus
+# Process a repository
+python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/repo
 ```
 
-#### Full Installation (with Semantic Layer)
+## Architecture
 
-```bash
-# Install with semantic features
-pip install -e ".[semantic,vector]"
+CodeIndexer follows a modular pipeline architecture:
+
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│  Git Ingestion  │────▶│  Code Parsing   │────▶│ Graph Building  │────▶│    Chunking     │────▶│    Embedding    │
+│                 │     │                 │     │                 │     │                 │     │                 │
+└─────────────────┘     └─────────────────┘     └─────────────────┘     └─────────────────┘     └─────────────────┘
 ```
 
-### Setup Tree-sitter
+Each stage can be run independently or as part of an end-to-end process:
 
-The ingestion pipeline uses Tree-sitter for robust, language-agnostic code parsing:
+1. **Git Ingestion**: Extracts code from repositories with incremental update support
+2. **Code Parsing**: Generates AST representations using Tree-sitter
+3. **Graph Building**: Creates a knowledge graph in Neo4j with the placeholder pattern
+4. **Chunking**: Divides code into semantic chunks
+5. **Embedding**: Generates vector representations for similarity search
 
-```bash
-# Set up Tree-sitter language parsers (recommended languages)
-python -m code_indexer.ingestion.setup_tree_sitter
-
-# Or set up specific languages
-python -m code_indexer.ingestion.setup_tree_sitter --languages python,javascript,typescript,java
-```
+For detailed information, see [Ingestion Flow Documentation](docs/ingestion-flow.md).
 
 ## Usage
 
-### Running the Ingestion Pipeline
+### Basic Commands
 
 ```bash
-# Using the CLI entry point
-codeindexer-ingest --repo-path /path/to/repo --output-dir ./results
+# Run full pipeline
+python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/repo
 
-# Run incremental indexing
-codeindexer-ingest --repo-path /path/to/repo
+# Force full reindexing
+python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/repo --full-indexing
 
-# Full reindexing
-codeindexer-ingest --repo-path /path/to/repo --full-indexing
-
-# Configure resolution strategy based on repository size
-codeindexer-ingest --repo-path /path/to/repo --resolution-strategy join  # Default, for repos with <2M definitions
-codeindexer-ingest --repo-path /path/to/repo --resolution-strategy hashmap  # For repos with 2-5M definitions
-codeindexer-ingest --repo-path /path/to/repo --resolution-strategy sharded  # For massive repos >5M definitions
-
-# Control when resolution happens
-codeindexer-ingest --repo-path /path/to/repo --immediate-resolution  # Resolve during ingestion
-codeindexer-ingest --repo-path /path/to/repo  # Bulk resolution at end
+# Skip specific stages
+python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/repo --skip-git --skip-parse
 ```
 
-### Alternative: Using the Python Module
+### Advanced Configuration
 
 ```bash
-# Process a repository with the ingestion pipeline
-python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/repo --resolution-strategy join
-
-# Options for different codebase sizes
-python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/repo --resolution-strategy hashmap  # For medium repos (2-5M definitions)
-python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/repo --resolution-strategy sharded  # For large repos (>5M definitions)
-
-# Control how resolution happens
-python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/repo --immediate-resolution  # Resolve during processing
-python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/repo  # Bulk resolution at the end
+# Configure resolution strategy based on codebase size
+python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/repo --resolution-strategy join  # Default, for repos with <2M definitions
+python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/repo --resolution-strategy hashmap  # For repos with 2-5M definitions
+python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/repo --resolution-strategy sharded  # For massive repos >5M definitions
 ```
 
-### Running the Semantic API (requires ADK)
+## Documentation
 
-```bash
-# Start the semantic API
-codeindexer-semantic --team code_indexer/semantic/teams/query_team.yaml --port 8000
-```
+- [Ingestion Flow](docs/ingestion-flow.md): Detailed explanation of the ingestion pipeline
+- [Placeholder Pattern](docs/placeholder_pattern.md): Information about the cross-file resolution approach
+- [Graph Schema](docs/graph_schema.md): Neo4j graph database schema
 
-## Docker
+## Prerequisites
 
-```bash
-# Build base image (ingestion only)
-docker build -t codeindexer:latest .
-
-# Build with semantic features
-docker build -t codeindexer:semantic --target semantic .
-
-# Run container
-docker run -p 8000:8000 codeindexer:semantic
-```
-
-## Development
-
-```bash
-# Install dev dependencies
-pip install -e ".[dev]"
-```
-
-## Advanced Graph Features
-
-The enhanced graph builder implements the placeholder pattern for accurate cross-file relationship tracking:
-
-- **Durable Placeholders**: Call sites and import sites preserved as first-class nodes
-- **Two-Phase Resolution**: Efficient resolution of placeholders to their targets
-- **Multiple Resolution Strategies**: Options for different codebase sizes
-  - Pure Cypher Join: Best for repos with <2M definitions
-  - In-Process Hash Map: Optimized for 2-5M definitions
-  - Label-Sharded Index: For massive codebases (>5M definitions)
-- **Relationship Confidence**: Scores indicate certainty of resolutions
-
-Read more about the placeholder pattern in [docs/placeholder_pattern.md](docs/placeholder_pattern.md).
+- Python 3.8+
+- Neo4j (for graph storage)
+- Git (for repository access)
+- Tree-sitter (for code parsing)
 
 ## License
 
