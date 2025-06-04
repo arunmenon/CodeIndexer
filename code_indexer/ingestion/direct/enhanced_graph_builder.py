@@ -261,6 +261,7 @@ class EnhancedGraphBuilderRunner(DirectGraphBuilderRunner):
         })
     
     def _extract_call_sites(self, ast_root: Dict[str, Any], file_id: str, 
+                          repository: str = "",
                           current_function: Optional[Dict[str, Any]] = None, 
                           current_class: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """
@@ -269,6 +270,7 @@ class EnhancedGraphBuilderRunner(DirectGraphBuilderRunner):
         Args:
             ast_root: Root of the AST
             file_id: ID of the file
+            repository: Repository name
             current_function: Current function context if inside a function
             current_class: Current class context if inside a class
             
@@ -304,9 +306,9 @@ class EnhancedGraphBuilderRunner(DirectGraphBuilderRunner):
             if call_info:
                 # Generate a unique ID for the call site that includes repository information
                 # This ensures uniqueness across repositories even if file paths are similar
-                repo_identifier = ast_data.get("repository", "") or repository or ""
+                # Use repository parameter which is passed in from _process_ast method
                 call_id = hashlib.md5(
-                    f"{repo_identifier}:{file_id}:{start_line}:{start_col}:{call_info['name']}".encode()
+                    f"{repository}:{file_id}:{start_line}:{start_col}:{call_info['name']}".encode()
                 ).hexdigest()
                 
                 # Create call site node
@@ -389,13 +391,14 @@ class EnhancedGraphBuilderRunner(DirectGraphBuilderRunner):
                 
         return None
     
-    def _extract_import_sites(self, ast_root: Dict[str, Any], file_id: str) -> List[Dict[str, Any]]:
+    def _extract_import_sites(self, ast_root: Dict[str, Any], file_id: str, repository: str = "") -> List[Dict[str, Any]]:
         """
         Extract import sites from the AST and create placeholder nodes.
         
         Args:
             ast_root: Root of the AST
             file_id: ID of the file
+            repository: Repository name
             
         Returns:
             List of created import site nodes
@@ -424,9 +427,9 @@ class EnhancedGraphBuilderRunner(DirectGraphBuilderRunner):
                 if name:
                     # Generate a unique ID for the import site that includes repository information
                     # This ensures uniqueness across repositories even if file paths are similar
-                    repo_identifier = ast_data.get("repository", "") or repository or ""
+                    # Use repository parameter which is passed in from _process_ast method
                     import_id = hashlib.md5(
-                        f"{repo_identifier}:{file_id}:import:{start_line}:{name}".encode()
+                        f"{repository}:{file_id}:import:{start_line}:{name}".encode()
                     ).hexdigest()
                     
                     # Create import site node
@@ -472,9 +475,9 @@ class EnhancedGraphBuilderRunner(DirectGraphBuilderRunner):
                 if name and module:
                     # Generate a unique ID for the import site that includes repository information
                     # This ensures uniqueness across repositories even if file paths are similar
-                    repo_identifier = ast_data.get("repository", "") or repository or ""
+                    # Use repository parameter which is passed in from _process_ast method
                     import_id = hashlib.md5(
-                        f"{repo_identifier}:{file_id}:import_from:{start_line}:{module}.{name}".encode()
+                        f"{repository}:{file_id}:import_from:{start_line}:{module}.{name}".encode()
                     ).hexdigest()
                     
                     # Create import site node
@@ -1226,12 +1229,14 @@ class EnhancedGraphBuilderRunner(DirectGraphBuilderRunner):
             if self.create_placeholders:
                 call_sites = self._extract_call_sites(
                     ast_root=ast_root,
-                    file_id=file_id
+                    file_id=file_id,
+                    repository=repository
                 )
                 
                 import_sites = self._extract_import_sites(
                     ast_root=ast_root,
-                    file_id=file_id
+                    file_id=file_id,
+                    repository=repository
                 )
             
             # Update stats
