@@ -6,6 +6,8 @@ A powerful, scalable code indexing and search system built with a modular archit
 
 CodeIndexer creates a semantic understanding of codebases by combining AST parsing, graph representation, and vector embeddings to enable natural language search and analysis of code.
 
+**New to CodeIndexer?** Check out our [Getting Started Guide](docs/getting_started.md) to set up your environment and run your first indexing job.
+
 ## Key Features
 
 - **Multi-Language Support**: Parses 50+ programming languages using Tree-sitter
@@ -75,9 +77,12 @@ python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/repo --re
 
 ## Documentation
 
+- [Getting Started Guide](docs/getting_started.md): Quick setup and first steps with CodeIndexer
+- [End-to-End Example](docs/end_to_end_example.md): Complete walkthrough with a real project
 - [Ingestion Flow](docs/ingestion-flow.md): Detailed explanation of the ingestion pipeline
 - [Placeholder Pattern](docs/placeholder_pattern.md): Information about the cross-file resolution approach
 - [Graph Schema](docs/graph_schema.md): Neo4j graph database schema
+- [Troubleshooting](docs/troubleshooting.md): Solutions for common issues and errors
 
 ## Prerequisites
 

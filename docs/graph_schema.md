@@ -4,6 +4,12 @@
 
 The Code Knowledge Graph represents code structure, relationships, and semantics in a Neo4j graph database. The schema includes nodes for code entities (files, classes, functions) as well as placeholders for cross-file relationships (call sites, import sites).
 
+> **New to CodeIndexer?** Start with the [Getting Started Guide](./getting_started.md).
+>
+> **Want to understand how this graph is created?** See the [Ingestion Flow](./ingestion-flow.md) documentation.
+>
+> **Looking for practical examples?** Check the [End-to-End Example](./end_to_end_example.md).
+
 ## Graph Structure Visualization
 
 ```
@@ -197,6 +203,8 @@ When a function call is detected in the code, it goes through the following reso
 │ & Timestamp        │     │ Ambiguity     │     │ Function      │
 └────────────────────┘     └───────────────┘     └───────────────┘
 ```
+
+For a detailed explanation of how this resolution works, see the [Placeholder Pattern](./placeholder_pattern.md) documentation.
 
 ## Cross-File Resolution Example
 

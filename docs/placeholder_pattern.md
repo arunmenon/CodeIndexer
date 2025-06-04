@@ -4,6 +4,10 @@
 
 The placeholder pattern implemented in CodeIndexer enables accurate cross-file relationship tracking in the knowledge graph. By creating explicit nodes for call sites and import sites, we can establish robust connections between code entities across file boundaries without requiring external caching services.
 
+> **New to CodeIndexer?** Start with the [Getting Started Guide](./getting_started.md).
+>
+> **Want to see this pattern in action?** Check the [End-to-End Example](./end_to_end_example.md).
+
 ## Key Features
 
 1. **Durable Placeholders**: Call sites and import sites are preserved as durable nodes in the graph, maintaining provenance information.
@@ -111,6 +115,174 @@ result = runner.run({
    - "Find all callers of this function"
    - "Track dependency chains across modules"
    - "Identify dead code paths"
+
+## Concrete Example: Before and After Resolution
+
+Let's walk through a specific example to illustrate how the placeholder pattern works in practice. Consider the following code across multiple files:
+
+### File 1: `utils.py`
+```python
+def format_data(data):
+    """Format raw data for processing"""
+    if not data:
+        return None
+    return data.strip().lower()
+
+def validate_input(data):
+    """Validate that input meets requirements"""
+    return bool(data and len(data) > 3)
+```
+
+### File 2: `processor.py`
+```python
+from utils import format_data, validate_input
+
+def process_user_input(raw_input):
+    """Process user input with validation"""
+    formatted = format_data(raw_input)
+    if validate_input(formatted):
+        return {"status": "valid", "data": formatted}
+    return {"status": "invalid", "data": None}
+```
+
+### Phase 1: Initial Graph Creation (Before Resolution)
+
+During the initial graph creation phase, we create nodes for all files, functions, and importantly, placeholders for all call sites and import sites:
+
+```
+// Files
+CREATE (utils:File {path: "utils.py"})
+CREATE (processor:File {path: "processor.py"})
+
+// Functions in utils.py
+CREATE (format_func:Function {name: "format_data", file_id: "utils.py"})
+CREATE (validate_func:Function {name: "validate_input", file_id: "utils.py"})
+CREATE (utils)-[:CONTAINS]->(format_func)
+CREATE (utils)-[:CONTAINS]->(validate_func)
+
+// Functions in processor.py
+CREATE (process_func:Function {name: "process_user_input", file_id: "processor.py"})
+CREATE (processor)-[:CONTAINS]->(process_func)
+
+// Import sites in processor.py
+CREATE (import_format:ImportSite {import_name: "format_data", module_name: "utils", resolved: false})
+CREATE (import_validate:ImportSite {import_name: "validate_input", module_name: "utils", resolved: false})
+CREATE (processor)-[:CONTAINS]->(import_format)
+CREATE (processor)-[:CONTAINS]->(import_validate)
+
+// Call sites in process_user_input
+CREATE (call_format:CallSite {call_name: "format_data", start_line: 5, resolved: false})
+CREATE (call_validate:CallSite {call_name: "validate_input", start_line: 6, resolved: false})
+CREATE (process_func)-[:CONTAINS]->(call_format)
+CREATE (process_func)-[:CONTAINS]->(call_validate)
+```
+
+At this stage, our graph looks like this:
+
+```
+┌───────────────┐           ┌───────────────┐
+│ File:utils.py │           │File:processor.py│
+└───────┬───────┘           └───────┬───────┘
+        │                           │
+        │ CONTAINS                  │ CONTAINS
+        ▼                           ▼
+┌───────────────┐           ┌───────────────┐
+│Function:      │           │Function:      │
+│format_data    │           │process_user_..│
+└───────────────┘           └───────┬───────┘
+                                    │
+┌───────────────┐                   │ CONTAINS
+│Function:      │                   ▼
+│validate_input │           ┌───────────────┐
+└───────────────┘           │CallSite:      │
+        ▲                   │format_data    │
+        │                   └───────────────┘
+        │                   ┌───────────────┐
+        │                   │CallSite:      │
+        │                   │validate_input │
+        │                   └───────────────┘
+        │                   ┌───────────────┐
+        │                   │ImportSite:    │
+        │                   │format_data    │
+        │                   └───────────────┘
+        │                   ┌───────────────┐
+        │                   │ImportSite:    │
+        │                   │validate_input │
+        │                   └───────────────┘
+```
+
+Note that at this point, the call sites and import sites are not yet connected to their target functions.
+
+### Phase 2: Resolution Phase (After Resolution)
+
+In the resolution phase, we match call sites and import sites to their target functions:
+
+```
+// Resolve import sites
+MATCH (i:ImportSite {import_name: "format_data", module_name: "utils"})
+MATCH (f:Function {name: "format_data", file_id: "utils.py"})
+CREATE (i)-[:RESOLVES_TO {score: 1.0}]->(f)
+SET i.resolved = true
+
+MATCH (i:ImportSite {import_name: "validate_input", module_name: "utils"})
+MATCH (f:Function {name: "validate_input", file_id: "utils.py"})
+CREATE (i)-[:RESOLVES_TO {score: 1.0}]->(f)
+SET i.resolved = true
+
+// Resolve call sites
+MATCH (c:CallSite {call_name: "format_data"})
+MATCH (f:Function {name: "format_data", file_id: "utils.py"})
+CREATE (c)-[:RESOLVES_TO {score: 1.0}]->(f)
+SET c.resolved = true
+
+MATCH (c:CallSite {call_name: "validate_input"})
+MATCH (f:Function {name: "validate_input", file_id: "utils.py"})
+CREATE (c)-[:RESOLVES_TO {score: 1.0}]->(f)
+SET c.resolved = true
+```
+
+Now our graph looks like this:
+
+```
+┌───────────────┐           ┌───────────────┐
+│ File:utils.py │           │File:processor.py│
+└───────┬───────┘           └───────┬───────┘
+        │                           │
+        │ CONTAINS                  │ CONTAINS
+        ▼                           ▼
+┌───────────────┐           ┌───────────────┐
+│Function:      │           │Function:      │
+│format_data    │◄──────────│process_user_..│
+└───────────────┘           └───────┬───────┘
+        ▲                           │
+        │                           │ CONTAINS
+        │                           ▼
+        │                   ┌───────────────┐
+        │                   │CallSite:      │
+        └───────────────────│format_data    │
+                RESOLVES_TO └───────────────┘
+┌───────────────┐                   │
+│Function:      │                   │
+│validate_input │◄──────────────────┘
+└───────────────┘           RESOLVES_TO
+        ▲                   ┌───────────────┐
+        │                   │CallSite:      │
+        └───────────────────│validate_input │
+                RESOLVES_TO └───────────────┘
+        ▲                   ┌───────────────┐
+        │                   │ImportSite:    │
+        └───────────────────│format_data    │
+                RESOLVES_TO └───────────────┘
+        ▲                   ┌───────────────┐
+        │                   │ImportSite:    │
+        └───────────────────│validate_input │
+                RESOLVES_TO └───────────────┘
+```
+
+Now, we have a fully connected graph with explicit relationships showing how functions are imported and called across file boundaries. This allows us to answer questions like:
+- "Which functions call `validate_input`?"
+- "Which files import functions from `utils.py`?"
+- "What external functions does `process_user_input` depend on?"
 
 ## Performance Considerations
 

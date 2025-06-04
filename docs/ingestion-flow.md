@@ -2,6 +2,10 @@
 
 This document provides a comprehensive overview of the CodeIndexer ingestion pipeline, its architecture, and implementation details.
 
+> **New to CodeIndexer?** Start with the [Getting Started Guide](./getting_started.md) first.
+>
+> **Want a practical example?** Check out the [End-to-End Example](./end_to_end_example.md).
+
 ## Architecture Overview
 
 The ingestion pipeline follows a modular design with distinct stages that can be run independently or as part of an end-to-end process:
@@ -56,10 +60,12 @@ Creates a knowledge graph in Neo4j with the placeholder pattern for cross-file r
 - Incremental graph updates
 
 **Implementation:**
-- Uses the placeholder pattern for cross-file resolution
+- Uses the [placeholder pattern](./placeholder_pattern.md) for cross-file resolution
 - Multiple resolution strategies based on codebase size
 - Support for inheritance, call sites, and imports
 - Optimization for large codebases
+
+> For detailed information about the graph structure, see the [Graph Schema](./graph_schema.md) documentation.
 
 ### Stage 4: Chunking
 
@@ -188,3 +194,9 @@ For efficient incremental updates:
 ## Conclusion
 
 The CodeIndexer ingestion pipeline provides a robust, scalable solution for code analysis and knowledge graph creation. Its modular design allows for flexible deployment and optimization for different codebase sizes and use cases.
+
+## Next Steps
+
+- See the [End-to-End Example](./end_to_end_example.md) for a practical demonstration
+- Explore the [Graph Schema](./graph_schema.md) to understand the resulting knowledge graph
+- Learn about the [Placeholder Pattern](./placeholder_pattern.md) for detailed cross-file resolution information
