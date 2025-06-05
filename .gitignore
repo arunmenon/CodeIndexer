@@ -44,6 +44,9 @@ benchmark_results/
 *.log
 *.tmp
 *.temp
+CLAUDE.md
+LOCAL_USAGE.md
+TESTING_NOTES.md
 
 # Neo4j
 data/neo4j/
