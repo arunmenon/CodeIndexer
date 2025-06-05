@@ -121,6 +121,11 @@ This pipeline follows three main stages:
                         Resolve placeholders immediately rather than in bulk
                         (slower but lower memory usage)
 
+🔐 Git Authentication:
+  --ssh-auth            Use SSH authentication for Git operations (required for many private repositories)
+  --ssh-key KEY_PATH    Path to SSH private key for Git authentication (default: uses SSH agent or
+                        CODEINDEXER_SSH_KEY env var)
+
 🔌 Neo4j Connection:
   --neo4j-uri URI       Neo4j URI (default: from env var NEO4J_URI or bolt://localhost:7687)
   --neo4j-user USER     Neo4j username (default: from env var NEO4J_USER or neo4j)
@@ -138,6 +143,12 @@ python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/local/rep
 
 # Index a remote repository (GitHub, GitLab, etc.)
 python -m code_indexer.ingestion.cli.run_pipeline --repo-path https://github.com/username/repo.git
+
+# Use SSH authentication for private repositories
+python -m code_indexer.ingestion.cli.run_pipeline --repo-path https://github.com/username/private-repo.git --ssh-auth
+
+# Use SSH authentication with a specific SSH key
+python -m code_indexer.ingestion.cli.run_pipeline --repo-path https://github.com/username/private-repo.git --ssh-auth --ssh-key ~/.ssh/id_rsa
 
 # Specify branch (default is 'main')
 python -m code_indexer.ingestion.cli.run_pipeline --repo-path https://github.com/username/repo.git --branch develop
@@ -188,6 +199,9 @@ python -m code_indexer.ingestion.cli.run_pipeline --repo-path ./my_python_projec
 
 # Full indexing of a large JavaScript project with hashmap resolution
 python -m code_indexer.ingestion.cli.run_pipeline --repo-path https://github.com/organization/large-js-project.git --full-indexing --resolution-strategy hashmap
+
+# Access a private enterprise GitHub repository with SSH authentication
+python -m code_indexer.ingestion.cli.run_pipeline --repo-path https://github.enterprise.com/internal/private-repo.git --ssh-auth --branch develop
 ```
 
 ### CLI Output Example
@@ -282,6 +296,7 @@ FINAL PIPELINE STATUS
 - [Getting Started Guide](docs/getting_started.md): Quick setup and first steps with CodeIndexer
 - [End-to-End Example](docs/end_to_end_example.md): Complete walkthrough with a real project
 - [Ingestion Flow](docs/ingestion-flow.md): Detailed explanation of the ingestion pipeline
+- [SSH Authentication](docs/ssh_authentication.md): Guide for accessing private repositories
 - [Placeholder Pattern](docs/placeholder_pattern.md): Information about the cross-file resolution approach
 - [Graph Schema](docs/graph_schema.md): Neo4j graph database schema
 - [Troubleshooting](docs/troubleshooting.md): Solutions for common issues and errors
