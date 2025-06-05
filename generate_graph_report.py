@@ -91,8 +91,8 @@ class Neo4jReporter:
         MATCH (f:Function)
         RETURN 
             count(f) as totalFunctions,
-            avg(size((f)<-[:CONTAINS]-())) as avgCallers,
-            max(size((f)<-[:CONTAINS]-())) as maxCallers
+            avg(count { (f)<-[:CONTAINS]-() }) as avgCallers,
+            max(count { (f)<-[:CONTAINS]-() }) as maxCallers
         """
         return self.run_query(query)
         
@@ -102,8 +102,8 @@ class Neo4jReporter:
         MATCH (c:Class)
         RETURN 
             count(c) as totalClasses,
-            avg(size((c)-[:CONTAINS]->(:Function))) as avgFunctionsPerClass,
-            max(size((c)-[:CONTAINS]->(:Function))) as maxFunctionsPerClass
+            avg(count { (c)-[:CONTAINS]->(:Function) }) as avgFunctionsPerClass,
+            max(count { (c)-[:CONTAINS]->(:Function) }) as maxFunctionsPerClass
         """
         return self.run_query(query)
         
