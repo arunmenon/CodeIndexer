@@ -1,999 +1,386 @@
 """
-Direct Graph Builder Runner
-
-A standalone implementation of the graph builder process without ADK dependencies.
+Graph Builder
+Builds knowledge graph from AST data using batch operations for performance.
 """
 
-import os
-import logging
-import time
 import hashlib
-from typing import Dict, List, Any, Optional, Tuple, Union
+import logging
+from typing import Dict, List, Any, Optional, Tuple
+from neo4j import GraphDatabase
 
-# Import Neo4j wrapper and utility functions
-from code_indexer.utils.ast_utils import find_entity_in_ast, get_function_info, get_class_info
 
-
-class Neo4jToolWrapper:
-    """
-    A wrapper for the Neo4jTool that removes ADK dependencies.
+class GraphBuilder:
+    """Graph builder that creates knowledge graph from AST data."""
     
-    This wrapper provides the same functionality as the Neo4jTool but without
-    any ADK dependencies. It's a direct implementation using the Neo4j Python driver.
-    """
-    
-    def __init__(self, config: Dict[str, Any] = None):
-        """
-        Initialize the Neo4j tool wrapper.
+    def __init__(self, neo4j_config: Dict[str, Any]):
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self.driver = GraphDatabase.driver(
+            neo4j_config["uri"],
+            auth=(neo4j_config["user"], neo4j_config["password"])
+        )
+        self.batch_size = neo4j_config.get("batch_size", 1000)
+        self.stats = {
+            "functions": 0,
+            "classes": 0,
+            "call_sites": 0,
+            "files": 0,
+            "resolved_calls": 0,
+            "resolved_imports": 0
+        }
         
-        Args:
-            config: Configuration dictionary
-        """
-        self.config = config or {}
-        self.logger = logging.getLogger("direct_neo4j_tool")
-        
-        # Import Neo4j conditionally to handle environments without it
-        try:
-            from neo4j import GraphDatabase, basic_auth
-            self.has_neo4j = True
-        except ImportError:
-            self.has_neo4j = False
-            self.logger.warning("Neo4j driver not installed. Graph functionality will not work.")
-            return
-        
-        # Connection settings from environment variables or config
-        self.uri = self.config.get("NEO4J_URI", os.environ.get("NEO4J_URI", "bolt://localhost:7687"))
-        self.user = self.config.get("NEO4J_USER", os.environ.get("NEO4J_USER", "neo4j"))
-        self.password = self.config.get("NEO4J_PASSWORD", os.environ.get("NEO4J_PASSWORD", "password"))
-        self.database = self.config.get("NEO4J_DATABASE", os.environ.get("NEO4J_DATABASE", "neo4j"))
-        
-        # Create driver attribute
-        self.driver = None
-        
-        # Connect to Neo4j
-        self.connect()
-    
-    def connect(self) -> bool:
-        """
-        Connect to Neo4j database.
-        
-        Returns:
-            True if connection succeeded, False otherwise
-        """
-        if not self.has_neo4j:
-            self.logger.error("Neo4j driver not installed")
-            return False
-        
-        try:
-            from neo4j import GraphDatabase, basic_auth
-            self.driver = GraphDatabase.driver(
-                self.uri, 
-                auth=basic_auth(self.user, self.password)
-            )
-            # Test connection
-            with self.driver.session(database=self.database) as session:
-                session.run("RETURN 1")
-            
-            self.logger.info(f"Connected to Neo4j at {self.uri}")
-            return True
-        except Exception as e:
-            self.logger.error(f"Failed to connect to Neo4j: {e}")
-            self.driver = None
-            return False
-    
-    def close(self) -> None:
-        """Close the Neo4j connection."""
+    def close(self):
+        """Close the Neo4j driver."""
         if self.driver:
             self.driver.close()
-            self.driver = None
-    
-    def execute_cypher(self, query: str, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-        """
-        Execute a custom Cypher query.
-        
-        Args:
-            query: Cypher query string
-            params: Query parameters
             
-        Returns:
-            List of results as dictionaries
-        """
-        if not self.driver:
-            self.connect()
-        
-        try:
-            with self.driver.session(database=self.database) as session:
-                result = session.run(query, params or {})
-                return [dict(record) for record in result]
-        except Exception as e:
-            self.logger.error(f"Error executing Cypher query: {e}")
-            raise
-    
-    def create_file_node(self, file_id: str, path: str, language: str, 
-                        repo_path: Optional[str] = None) -> str:
-        """
-        Create or update a File node in the graph.
-        
-        Args:
-            file_id: Unique identifier for the file
-            path: Path to the file within the repository
-            language: Programming language of the file
-            repo_path: Path to the repository (optional)
+    def clear_repository(self, repository: str):
+        """Clear all nodes for a specific repository."""
+        with self.driver.session() as session:
+            # Delete in chunks to avoid memory issues
+            deleted = 1
+            while deleted > 0:
+                result = session.run("""
+                    MATCH (n)
+                    WHERE n.repository = $repository
+                    WITH n LIMIT 10000
+                    DETACH DELETE n
+                    RETURN count(n) as deleted
+                """, repository=repository)
+                deleted = result.single()["deleted"]
+                if deleted > 0:
+                    self.logger.info(f"Deleted {deleted} nodes...")
             
-        Returns:
-            ID of the created/updated node
-        """
-        if not self.driver:
-            self.connect()
+    def process_file(self, file_path: str, ast_data: Dict[str, Any], repository: str) -> Dict[str, int]:
+        """Process a single file and extract all entities."""
+        # Determine AST format
+        ast_format = "tree-sitter" if ast_data.get("parser") == "tree-sitter" else "native"
+        ast_root = ast_data.get("root", ast_data)
         
-        query = """
-        MERGE (f:File {id: $file_id})
-        SET f.path = $path,
-            f.language = $language,
-            f.repo_path = $repo_path,
-            f.last_updated = timestamp()
-        RETURN f.id
-        """
-        
-        with self.driver.session(database=self.database) as session:
-            result = session.run(
-                query,
-                file_id=file_id,
-                path=path,
-                language=language,
-                repo_path=repo_path
-            )
-            return result.single()[0]
-    
-    def create_class_node(self, class_id: str, name: str, file_id: str,
-                         start_line: int, end_line: int, 
-                         docstring: Optional[str] = None) -> str:
-        """
-        Create or update a Class node in the graph.
-        
-        Args:
-            class_id: Unique identifier for the class
-            name: Name of the class
-            file_id: ID of the file containing the class
-            start_line: Starting line number
-            end_line: Ending line number
-            docstring: Class documentation string (optional)
-            
-        Returns:
-            ID of the created/updated node
-        """
-        if not self.driver:
-            self.connect()
-        
-        query = """
-        MERGE (c:Class {id: $class_id})
-        SET c.name = $name,
-            c.file_id = $file_id,
-            c.start_line = $start_line,
-            c.end_line = $end_line,
-            c.docstring = $docstring,
-            c.last_updated = timestamp()
-        RETURN c.id
-        """
-        
-        with self.driver.session(database=self.database) as session:
-            result = session.run(
-                query,
-                class_id=class_id,
-                name=name,
-                file_id=file_id,
-                start_line=start_line,
-                end_line=end_line,
-                docstring=docstring
-            )
-            return result.single()[0]
-    
-    def create_function_node(self, function_id: str, name: str, file_id: str,
-                           start_line: int, end_line: int, params: List[str],
-                           docstring: Optional[str] = None, 
-                           class_id: Optional[str] = None,
-                           is_method: bool = False) -> str:
-        """
-        Create or update a Function node in the graph.
-        
-        Args:
-            function_id: Unique identifier for the function
-            name: Name of the function
-            file_id: ID of the file containing the function
-            start_line: Starting line number
-            end_line: Ending line number
-            params: List of parameter names
-            docstring: Function documentation string (optional)
-            class_id: ID of the class if it's a method (optional)
-            is_method: True if this is a class method
-            
-        Returns:
-            ID of the created/updated node
-        """
-        if not self.driver:
-            self.connect()
-        
-        query = """
-        MERGE (f:Function {id: $function_id})
-        SET f.name = $name,
-            f.file_id = $file_id,
-            f.class_id = $class_id,
-            f.start_line = $start_line,
-            f.end_line = $end_line,
-            f.params = $params,
-            f.docstring = $docstring,
-            f.is_method = $is_method,
-            f.last_updated = timestamp()
-        RETURN f.id
-        """
-        
-        with self.driver.session(database=self.database) as session:
-            result = session.run(
-                query,
-                function_id=function_id,
-                name=name,
-                file_id=file_id,
-                class_id=class_id,
-                start_line=start_line,
-                end_line=end_line,
-                params=params,
-                docstring=docstring,
-                is_method=is_method
-            )
-            return result.single()[0]
-    
-    def create_relationship(self, from_id: str, to_id: str, rel_type: str,
-                          properties: Optional[Dict[str, Any]] = None) -> bool:
-        """
-        Create a relationship between two nodes.
-        
-        Args:
-            from_id: ID of the source node
-            to_id: ID of the target node
-            rel_type: Type of relationship (e.g., "CONTAINS", "CALLS")
-            properties: Optional properties for the relationship
-            
-        Returns:
-            True if relationship was created, False otherwise
-        """
-        if not self.driver:
-            self.connect()
-        
-        query = f"""
-        MATCH (from) WHERE from.id = $from_id
-        MATCH (to) WHERE to.id = $to_id
-        MERGE (from)-[r:{rel_type}]->(to)
-        """
-        
-        # Add property setting if provided
-        if properties:
-            props_str = ", ".join(f"r.{k} = ${k}" for k in properties.keys())
-            query += f" SET {props_str}"
-        
-        try:
-            with self.driver.session(database=self.database) as session:
-                session.run(
-                    query,
-                    from_id=from_id,
-                    to_id=to_id,
-                    **properties or {}
-                )
-            return True
-        except Exception as e:
-            self.logger.error(f"Error creating relationship: {e}")
-            return False
-
-
-class DirectGraphBuilderRunner:
-    """
-    DirectGraphBuilderRunner is responsible for building and updating the code knowledge graph.
-    
-    This is a direct runner implementation that doesn't depend on ADK but provides
-    the same functionality as the GraphBuilderAgent.
-    """
-    
-    def __init__(self, config: Dict[str, Any] = None):
-        """
-        Initialize the runner.
-        
-        Args:
-            config: Configuration dictionary
-        """
-        self.config = config or {}
-        self.logger = logging.getLogger("direct_graph_builder")
-        
-        # Configure defaults
-        self.use_imports = self.config.get("use_imports", True)
-        self.use_inheritance = self.config.get("use_inheritance", True)
-        self.detect_calls = self.config.get("detect_calls", True)
-        
-        # Initialize Neo4j tool wrapper
-        self.neo4j_tool = Neo4jToolWrapper(self.config.get("neo4j_config", {}))
-        
-        # Setup Neo4j connection and schema
-        if self.neo4j_tool.connect():
-            self._setup_schema()
-            self.logger.info("Successfully connected to Neo4j")
-        else:
-            self.logger.error("Failed to connect to Neo4j database")
-        
-        # Graph statistics
-        self.graph_stats = {
-            "files": 0,
-            "classes": 0,
-            "functions": 0,
-            "relationships": 0
-        }
-    
-    def run(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Build the knowledge graph from AST structures.
-        
-        Args:
-            input_data: Dictionary containing AST structures
-            
-        Returns:
-            Dictionary with graph building results
-        """
-        self.logger.info("Starting direct graph builder")
-        
-        # Extract ASTs from input
-        asts = input_data.get("asts", [])
-        if not asts:
-            return {"error": "No ASTs to process"}
-        
-        repository = input_data.get("repository", "")
-        repository_url = input_data.get("repository_url", "")
-        commit = input_data.get("commit", "")
-        branch = input_data.get("branch", "")
-        is_full_indexing = input_data.get("is_full_indexing", False)
-        
-        # If full indexing, clear repository data
-        if is_full_indexing and repository:
-            self._clear_repository_data(repository)
-
-        # Process each AST
-        processed_files = []
-        failed_files = []
-        
-        for ast_data in asts:
-            file_path = ast_data.get("file_path", "")
-            if not file_path:
-                continue
-                
-            try:
-                # Build graph for this AST
-                result = self._process_ast(
-                    ast_data=ast_data,
-                    repository=repository,
-                    repository_url=repository_url,
-                    commit=commit,
-                    branch=branch
-                )
-                
-                if result.get("status") == "success":
-                    processed_files.append(file_path)
-                else:
-                    failed_files.append({
-                        "path": file_path,
-                        "error": result.get("error", "Unknown error")
-                    })
-            except Exception as e:
-                self.logger.error(f"Error processing AST for {file_path}: {e}")
-                failed_files.append({
-                    "path": file_path,
-                    "error": str(e)
-                })
-        
-        return {
-            "repository": repository,
-            "files_processed": len(processed_files),
-            "files_failed": len(failed_files),
-            "graph_stats": self.graph_stats,
-            "failed_files": failed_files[:10]  # Include only the first 10 failed files
-        }
-    
-    def _process_ast(self, ast_data: Dict[str, Any], repository: str,
-                   repository_url: str, commit: str, branch: str) -> Dict[str, Any]:
-        """
-        Process a single AST and build corresponding graph.
-        
-        Args:
-            ast_data: AST data dictionary
-            repository: Repository name
-            repository_url: Repository URL
-            commit: Commit hash
-            branch: Branch name
-            
-        Returns:
-            Dictionary with processing results
-        """
-        try:
-            # Extract AST data
-            file_path = ast_data.get("file_path", "")
-            language = ast_data.get("language", "unknown")
-            ast_root = ast_data.get("root", {})
-            
-            if not file_path or not ast_root:
-                return {
-                    "status": "error",
-                    "error": "Missing file path or AST root"
-                }
-            
-            # Create file node
-            file_id = self._create_file_node(
-                file_path=file_path,
-                language=language,
-                repository=repository,
-                repository_url=repository_url,
-                commit=commit,
-                branch=branch
-            )
-            
-            if not file_id:
-                return {
-                    "status": "error",
-                    "error": "Failed to create file node"
-                }
-            
-            # Extract and create entities (classes, functions, etc.)
-            entity_count = self._extract_entities(
-                ast_root=ast_root,
-                file_id=file_id,
-                file_path=file_path,
-                language=language
-            )
-            
-            # Create relationships between entities
-            relationship_count = self._create_relationships(
-                ast_root=ast_root,
-                file_id=file_id
-            )
-            
-            # Update stats
-            self.graph_stats["files"] += 1
-            
-            return {
-                "status": "success",
-                "file_id": file_id,
-                "entity_count": entity_count,
-                "relationship_count": relationship_count
-            }
-            
-        except Exception as e:
-            return {
-                "status": "error",
-                "error": str(e)
-            }
-    
-    def _create_file_node(self, file_path: str, language: str, repository: str,
-                       repository_url: str, commit: str, branch: str) -> str:
-        """
-        Create a file node in the graph.
-        
-        Args:
-            file_path: Path to the file
-            language: Programming language
-            repository: Repository name
-            repository_url: Repository URL
-            commit: Commit hash
-            branch: Branch name
-            
-        Returns:
-            ID of the created file node
-        """
-        # Generate a unique ID for the file
+        # Generate file ID
         file_id = hashlib.md5(f"{repository}:{file_path}".encode()).hexdigest()
         
-        # Create file node properties
-        file_props = {
-            "id": file_id,
-            "path": file_path,
-            "name": os.path.basename(file_path),
-            "language": language,
-            "repository": repository,
-            "repository_url": repository_url,
-            "commit": commit,
-            "branch": branch,
-            "last_updated": int(time.time())
+        # Collect all entities from this file
+        entities = {
+            "file": {
+                "id": file_id,
+                "path": file_path,
+                "repository": repository,
+                "language": ast_data.get("language", "unknown")
+            },
+            "functions": [],
+            "classes": [],
+            "call_sites": []
         }
         
-        # Create or update file node
-        query = """
-        MERGE (f:File {id: $id})
-        ON CREATE SET f = $props, f.created_at = timestamp()
-        ON MATCH SET f = $props
-        RETURN f.id
-        """
+        # Extract entities
+        self._extract_functions(ast_root, ast_format, file_id, repository, entities["functions"])
+        self._extract_classes(ast_root, ast_format, file_id, repository, entities["classes"])
+        self._extract_call_sites(ast_root, ast_format, file_id, repository, entities["call_sites"])
         
-        result = self.neo4j_tool.execute_cypher(query, {
-            "id": file_id,
-            "props": file_props
-        })
+        # Return counts
+        return {
+            "functions": len(entities["functions"]),
+            "classes": len(entities["classes"]),
+            "call_sites": len(entities["call_sites"])
+        }
         
-        # Check if file was created successfully
-        if result and len(result) > 0:
-            return file_id
+    def process_batch(self, files_batch: List[Tuple[str, Dict[str, Any], str]]):
+        """Process a batch of files efficiently."""
+        all_entities = {
+            "files": [],
+            "functions": [],
+            "classes": [],
+            "call_sites": []
+        }
         
-        return ""
-    
-    def _extract_entities(self, ast_root: Dict[str, Any], file_id: str,
-                      file_path: str, language: str) -> int:
-        """
-        Extract entities from the AST and create nodes.
-        
-        Args:
-            ast_root: Root of the AST
-            file_id: ID of the file node
-            file_path: Path to the file
-            language: Programming language
+        # Collect all entities from all files in the batch
+        for file_path, ast_data, repository in files_batch:
+            # Determine AST format
+            ast_format = "tree-sitter" if ast_data.get("parser") == "tree-sitter" else "native"
+            ast_root = ast_data.get("root", ast_data)
             
-        Returns:
-            Number of entities extracted
-        """
-        entity_count = 0
-        
-        # Process classes and functions in the AST
-        classes = self._extract_classes(ast_root, file_id, file_path, language)
-        entity_count += len(classes)
-        self.graph_stats["classes"] += len(classes)
-        
-        functions = self._extract_functions(ast_root, file_id, file_path, language)
-        entity_count += len(functions)
-        self.graph_stats["functions"] += len(functions)
-        
-        # Extract other entities for specific languages
-        if language == "python":
-            # Extract imports for Python
-            if self.use_imports:
-                imports = self._extract_imports(ast_root, file_id)
-                entity_count += len(imports)
-        
-        return entity_count
-    
-    def _extract_classes(self, ast_root: Dict[str, Any], file_id: str,
-                      file_path: str, language: str) -> List[Dict[str, Any]]:
-        """
-        Extract classes from the AST and create nodes.
-        
-        Args:
-            ast_root: Root of the AST
-            file_id: ID of the file node
-            file_path: Path to the file
-            language: Programming language
+            # Generate file ID
+            file_id = hashlib.md5(f"{repository}:{file_path}".encode()).hexdigest()
             
-        Returns:
-            List of created class nodes
-        """
-        classes = []
-        
-        # Find class nodes in the AST
-        class_nodes = find_entity_in_ast(ast_root, "ClassDef")
-        
-        for class_node in class_nodes:
-            # Extract class information
-            class_info = get_class_info(class_node, language)
-            
-            if not class_info.get("name"):
-                continue
-                
-            # Generate a unique ID for the class
-            class_id = hashlib.md5(f"{file_id}:{class_info['name']}".encode()).hexdigest()
-            
-            # Create class node properties
-            class_props = {
-                "id": class_id,
-                "name": class_info.get("name", ""),
-                "docstring": class_info.get("docstring", ""),
-                "start_line": class_info.get("start_line", 0),
-                "end_line": class_info.get("end_line", 0),
-                "file_id": file_id,
-                "parents": class_info.get("parents", [])
-            }
-            
-            # Create class node
-            query = """
-            MERGE (c:Class {id: $id})
-            ON CREATE SET c = $props, c.created_at = timestamp()
-            ON MATCH SET c = $props
-            WITH c
-            MATCH (f:File {id: $file_id})
-            MERGE (f)-[:CONTAINS]->(c)
-            RETURN c.id
-            """
-            
-            result = self.neo4j_tool.execute_cypher(query, {
-                "id": class_id,
-                "props": class_props,
-                "file_id": file_id
+            # Add file entity
+            all_entities["files"].append({
+                "id": file_id,
+                "path": file_path,
+                "repository": repository,
+                "language": ast_data.get("language", "unknown")
             })
             
-            if result and len(result) > 0:
-                # Add class inheritance relationships if available
-                if self.use_inheritance and class_info.get("parents"):
-                    for parent in class_info["parents"]:
-                        # For simplicity, just connect by name - in a real system
-                        # you'd need to resolve the parent class more accurately
-                        self._create_inheritance_relationship(class_id, parent)
-                
-                # Add the class to the result list
-                classes.append({
-                    "id": class_id,
-                    "name": class_info.get("name", ""),
-                    "file_id": file_id
-                })
+            # Extract entities for this file
+            self._extract_functions(ast_root, ast_format, file_id, repository, all_entities["functions"])
+            self._extract_classes(ast_root, ast_format, file_id, repository, all_entities["classes"])
+            self._extract_call_sites(ast_root, ast_format, file_id, repository, all_entities["call_sites"])
         
-        return classes
+        # Create all entities in batch
+        self._batch_create_entities(all_entities)
+        
+        # Update stats
+        self.stats["files"] += len(all_entities["files"])
+        self.stats["functions"] += len(all_entities["functions"])
+        self.stats["classes"] += len(all_entities["classes"])
+        self.stats["call_sites"] += len(all_entities["call_sites"])
+        
+    def _batch_create_entities(self, entities: Dict[str, List[Dict[str, Any]]]):
+        """Create all entities in a single batch transaction."""
+        with self.driver.session() as session:
+            # Create files
+            if entities["files"]:
+                session.run("""
+                    UNWIND $files as file
+                    MERGE (f:File {id: file.id})
+                    SET f.path = file.path,
+                        f.repository = file.repository,
+                        f.language = file.language,
+                        f.last_updated = timestamp()
+                """, files=entities["files"])
+            
+            # Create functions and relationships
+            if entities["functions"]:
+                session.run("""
+                    UNWIND $functions as func
+                    MERGE (f:Function {id: func.id})
+                    SET f.name = func.name,
+                        f.file_id = func.file_id,
+                        f.repository = func.repository,
+                        f.last_updated = timestamp()
+                    WITH f, func
+                    MATCH (file:File {id: func.file_id})
+                    MERGE (file)-[:CONTAINS]->(f)
+                """, functions=entities["functions"])
+            
+            # Create classes and relationships
+            if entities["classes"]:
+                session.run("""
+                    UNWIND $classes as cls
+                    MERGE (c:Class {id: cls.id})
+                    SET c.name = cls.name,
+                        c.file_id = cls.file_id,
+                        c.repository = cls.repository,
+                        c.last_updated = timestamp()
+                    WITH c, cls
+                    MATCH (file:File {id: cls.file_id})
+                    MERGE (file)-[:CONTAINS]->(c)
+                """, classes=entities["classes"])
+            
+            # Create call sites and relationships
+            if entities["call_sites"]:
+                session.run("""
+                    UNWIND $call_sites as cs
+                    MERGE (call:CallSite {id: cs.id})
+                    SET call.call_name = cs.call_name,
+                        call.caller_file_id = cs.file_id,
+                        call.repository = cs.repository,
+                        call.start_line = cs.start_line,
+                        call.last_updated = timestamp()
+                    WITH call, cs
+                    MATCH (file:File {id: cs.file_id})
+                    MERGE (file)-[:CONTAINS]->(call)
+                """, call_sites=entities["call_sites"])
     
-    def _extract_functions(self, ast_root: Dict[str, Any], file_id: str,
-                        file_path: str, language: str) -> List[Dict[str, Any]]:
-        """
-        Extract functions from the AST and create nodes.
-        
-        Args:
-            ast_root: Root of the AST
-            file_id: ID of the file node
-            file_path: Path to the file
-            language: Programming language
-            
-        Returns:
-            List of created function nodes
-        """
-        functions = []
-        
-        # Find function nodes in the AST
-        function_nodes = find_entity_in_ast(ast_root, "FunctionDef")
-        
-        for function_node in function_nodes:
-            # Extract function information
-            function_info = get_function_info(function_node, language)
-            
-            if not function_info.get("name"):
-                continue
-                
-            # Determine if this is a method (within a class)
-            is_method = function_info.get("is_method", False)
-            class_id = ""
-            
-            if is_method:
-                class_name = function_info.get("class_name", "")
-                if class_name:
-                    class_id = hashlib.md5(f"{file_id}:{class_name}".encode()).hexdigest()
-            
-            # Generate a unique ID for the function
-            function_id = hashlib.md5(
-                f"{file_id}:{function_info['name']}:{class_id}".encode()
-            ).hexdigest()
-            
-            # Create function node properties
-            function_props = {
-                "id": function_id,
-                "name": function_info.get("name", ""),
-                "docstring": function_info.get("docstring", ""),
-                "start_line": function_info.get("start_line", 0),
-                "end_line": function_info.get("end_line", 0),
-                "params": function_info.get("params", []),
-                "return_type": function_info.get("return_type", ""),
-                "file_id": file_id,
-                "class_id": class_id,
-                "is_method": is_method
-            }
-            
-            # Create function node
-            if is_method and class_id:
-                # Connect to both file and class if it's a method
-                query = """
-                MERGE (f:Function {id: $id})
-                ON CREATE SET f = $props, f.created_at = timestamp()
-                ON MATCH SET f = $props
-                WITH f
-                MATCH (c:Class {id: $class_id})
-                MERGE (c)-[:CONTAINS]->(f)
-                WITH f
-                MATCH (file:File {id: $file_id})
-                MERGE (file)-[:CONTAINS]->(f)
-                RETURN f.id
-                """
-                
-                result = self.neo4j_tool.execute_cypher(query, {
-                    "id": function_id,
-                    "props": function_props,
-                    "class_id": class_id,
-                    "file_id": file_id
-                })
-            else:
-                # Only connect to file if it's a standalone function
-                query = """
-                MERGE (f:Function {id: $id})
-                ON CREATE SET f = $props, f.created_at = timestamp()
-                ON MATCH SET f = $props
-                WITH f
-                MATCH (file:File {id: $file_id})
-                MERGE (file)-[:CONTAINS]->(f)
-                RETURN f.id
-                """
-                
-                result = self.neo4j_tool.execute_cypher(query, {
-                    "id": function_id,
-                    "props": function_props,
-                    "file_id": file_id
-                })
-            
-            if result and len(result) > 0:
-                # Add the function to the result list
-                functions.append({
-                    "id": function_id,
-                    "name": function_info.get("name", ""),
-                    "is_method": is_method,
-                    "class_id": class_id,
-                    "file_id": file_id
-                })
-        
-        return functions
-    
-    def _extract_imports(self, ast_root: Dict[str, Any], file_id: str) -> List[Dict[str, Any]]:
-        """
-        Extract imports from the AST and create nodes.
-        
-        Args:
-            ast_root: Root of the AST
-            file_id: ID of the file node
-            
-        Returns:
-            List of created import nodes
-        """
-        imports = []
-        
-        # Find import nodes in the AST
-        import_nodes = find_entity_in_ast(ast_root, "Import")
-        import_from_nodes = find_entity_in_ast(ast_root, "ImportFrom")
-        
-        # Process Import statements
-        for import_node in import_nodes:
-            if "names" not in import_node.get("attributes", {}):
-                continue
-                
-            for alias in import_node["attributes"]["names"]:
-                name = alias.get("name", "")
-                asname = alias.get("asname", "")
-                
-                if name:
-                    # Generate a unique ID for the import
-                    import_id = hashlib.md5(f"{file_id}:import:{name}".encode()).hexdigest()
-                    
-                    # Create import relationship
-                    query = """
-                    MATCH (f:File {id: $file_id})
-                    MERGE (i:Import {name: $name})
-                    ON CREATE SET i.created_at = timestamp()
-                    SET i.alias = $alias
-                    MERGE (f)-[:IMPORTS]->(i)
-                    RETURN i.name
-                    """
-                    
-                    result = self.neo4j_tool.execute_cypher(query, {
-                        "file_id": file_id,
-                        "name": name,
-                        "alias": asname if asname else None
-                    })
-                    
-                    if result and len(result) > 0:
-                        imports.append({
-                            "name": name,
-                            "alias": asname,
-                            "type": "import"
-                        })
-        
-        # Process ImportFrom statements
-        for import_from_node in import_from_nodes:
-            if "names" not in import_from_node.get("attributes", {}):
-                continue
-                
-            module = import_from_node["attributes"].get("module", "")
-            level = import_from_node["attributes"].get("level", 0)
-            
-            for alias in import_from_node["attributes"]["names"]:
-                name = alias.get("name", "")
-                asname = alias.get("asname", "")
-                
-                if name and module:
-                    # Generate a unique ID for the import
-                    import_id = hashlib.md5(
-                        f"{file_id}:import_from:{module}.{name}".encode()
-                    ).hexdigest()
-                    
-                    # Create import_from relationship
-                    query = """
-                    MATCH (f:File {id: $file_id})
-                    MERGE (i:Import {name: $full_name})
-                    ON CREATE SET i.created_at = timestamp()
-                    SET i.module = $module,
-                        i.member = $name,
-                        i.alias = $alias,
-                        i.level = $level
-                    MERGE (f)-[:IMPORTS]->(i)
-                    RETURN i.name
-                    """
-                    
-                    result = self.neo4j_tool.execute_cypher(query, {
-                        "file_id": file_id,
-                        "full_name": f"{module}.{name}",
-                        "module": module,
-                        "name": name,
-                        "alias": asname if asname else None,
-                        "level": level
-                    })
-                    
-                    if result and len(result) > 0:
-                        imports.append({
-                            "module": module,
-                            "name": name,
-                            "alias": asname,
-                            "type": "import_from"
-                        })
-        
-        return imports
-    
-    def _create_relationships(self, ast_root: Dict[str, Any], file_id: str) -> int:
-        """
-        Create relationships between entities in the graph.
-        
-        Args:
-            ast_root: Root of the AST
-            file_id: ID of the file node
-            
-        Returns:
-            Number of relationships created
-        """
-        relationship_count = 0
-        
-        if self.detect_calls:
-            # Extract function calls from AST and create CALLS relationships
-            call_relationships = self._extract_function_calls(ast_root, file_id)
-            relationship_count += call_relationships
-            self.graph_stats["relationships"] += call_relationships
-        
-        return relationship_count
-    
-    def _extract_function_calls(self, ast_root: Dict[str, Any], file_id: str) -> int:
-        """
-        Extract function calls from the AST and create CALLS relationships.
-        
-        Args:
-            ast_root: Root of the AST
-            file_id: ID of the file node
-            
-        Returns:
-            Number of call relationships created
-        """
-        call_count = 0
-        
-        # Find Call nodes in the AST
-        call_nodes = find_entity_in_ast(ast_root, "Call")
-        
-        for call_node in call_nodes:
-            # Get the function being called
-            if "func" not in call_node.get("attributes", {}):
-                continue
-                
-            func = call_node["attributes"]["func"]
-            
-            # Handle different call patterns
-            if func.get("type") == "Name":
-                # Simple function call: function_name()
-                callee_name = func.get("attributes", {}).get("id", "")
-                if callee_name:
-                    self._create_call_relationship(file_id, callee_name, "")
-                    call_count += 1
-                    
-            elif func.get("type") == "Attribute":
-                # Method call: object.method()
-                callee_name = func.get("attributes", {}).get("attr", "")
-                value = func.get("attributes", {}).get("value", {})
-                if callee_name and value.get("type") == "Name":
-                    # Get the object name
-                    object_name = value.get("attributes", {}).get("id", "")
-                    if object_name:
-                        self._create_call_relationship(file_id, callee_name, object_name)
-                        call_count += 1
-        
-        return call_count
-    
-    def _create_call_relationship(self, file_id: str, function_name: str, 
-                               class_name: str = "") -> None:
-        """
-        Create a CALLS relationship between a file and a function.
-        
-        Args:
-            file_id: ID of the calling file
-            function_name: Name of the called function
-            class_name: Name of the class (if a method call)
-        """
-        if class_name:
-            # This is a method call
-            query = """
-            MATCH (caller:File {id: $file_id})
-            MATCH (callee:Function)
-            WHERE callee.name = $function_name
-              AND EXISTS((callee)<-[:CONTAINS]-(:Class {name: $class_name}))
-            MERGE (caller)-[:CALLS]->(callee)
-            """
-            
-            self.neo4j_tool.execute_cypher(query, {
-                "file_id": file_id,
-                "function_name": function_name,
-                "class_name": class_name
-            })
+    def _extract_functions(self, ast_node: Dict[str, Any], ast_format: str, 
+                          file_id: str, repository: str, results: List[Dict[str, Any]]):
+        """Extract function entities from AST."""
+        # Map entity types for tree-sitter - different languages use different node types
+        if ast_format == "tree-sitter":
+            # Java uses method_declaration and constructor_declaration
+            # Python uses function_definition
+            # JavaScript uses function_declaration, method_definition, etc.
+            search_types = ["function_definition", "function_declaration", 
+                          "method_declaration", "method_definition", 
+                          "constructor_declaration", "arrow_function"]
         else:
-            # This is a function call
-            query = """
-            MATCH (caller:File {id: $file_id})
-            MATCH (callee:Function {name: $function_name})
-            MERGE (caller)-[:CALLS]->(callee)
-            """
+            search_types = ["FunctionDef"]
             
-            self.neo4j_tool.execute_cypher(query, {
-                "file_id": file_id,
-                "function_name": function_name
-            })
+        # Check current node
+        if ast_node.get("type") in search_types:
+            name = self._extract_name(ast_node, "function", ast_format)
+            if name:
+                func_id = hashlib.md5(f"{file_id}:{name}".encode()).hexdigest()
+                results.append({
+                    "id": func_id,
+                    "name": name,
+                    "file_id": file_id,
+                    "repository": repository
+                })
+        
+        # Recurse through children
+        for child in ast_node.get("children", []):
+            if isinstance(child, dict):
+                self._extract_functions(child, ast_format, file_id, repository, results)
     
-    def _create_inheritance_relationship(self, class_id: str, parent_name: str) -> None:
-        """
-        Create an INHERITS_FROM relationship between a class and its parent.
-        
-        Args:
-            class_id: ID of the child class
-            parent_name: Name of the parent class
-        """
-        query = """
-        MATCH (child:Class {id: $class_id})
-        MATCH (parent:Class {name: $parent_name})
-        MERGE (child)-[:INHERITS_FROM]->(parent)
-        """
-        
-        self.neo4j_tool.execute_cypher(query, {
-            "class_id": class_id,
-            "parent_name": parent_name
-        })
-    
-    def _clear_repository_data(self, repository: str) -> None:
-        """
-        Clear all data for a specific repository.
-        
-        Args:
-            repository: Repository name
-        """
-        query = """
-        MATCH (f:File {repository: $repository})
-        OPTIONAL MATCH (f)-[:CONTAINS]->(entity)
-        DETACH DELETE f, entity
-        """
-        
-        self.neo4j_tool.execute_cypher(query, {
-            "repository": repository
-        })
-        
-        self.logger.info(f"Cleared data for repository: {repository}")
-    
-    def _setup_schema(self) -> None:
-        """Setup Neo4j schema with constraints and indexes for better performance."""
-        # Create constraints
-        constraints = [
-            "CREATE CONSTRAINT IF NOT EXISTS FOR (f:File) REQUIRE f.id IS UNIQUE",
-            "CREATE CONSTRAINT IF NOT EXISTS FOR (c:Class) REQUIRE c.id IS UNIQUE",
-            "CREATE CONSTRAINT IF NOT EXISTS FOR (f:Function) REQUIRE f.id IS UNIQUE",
+    def _extract_classes(self, ast_node: Dict[str, Any], ast_format: str,
+                        file_id: str, repository: str, results: List[Dict[str, Any]]):
+        """Extract class entities from AST."""
+        # Map entity types for tree-sitter - different languages use different node types
+        if ast_format == "tree-sitter":
+            # Java uses class_declaration, interface_declaration, enum_declaration
+            # Python uses class_definition
+            # JavaScript/TypeScript uses class_declaration
+            search_types = ["class_definition", "class_declaration", 
+                          "interface_declaration", "enum_declaration"]
+        else:
+            search_types = ["ClassDef"]
             
-            # Add indexes for commonly queried properties
-            "CREATE INDEX IF NOT EXISTS FOR (f:File) ON (f.path)",
-            "CREATE INDEX IF NOT EXISTS FOR (f:File) ON (f.repository)",
-            "CREATE INDEX IF NOT EXISTS FOR (c:Class) ON (c.name)",
-            "CREATE INDEX IF NOT EXISTS FOR (f:Function) ON (f.name)"
-        ]
+        # Check current node
+        if ast_node.get("type") in search_types:
+            name = self._extract_name(ast_node, "class", ast_format)
+            if name:
+                class_id = hashlib.md5(f"{file_id}:{name}".encode()).hexdigest()
+                results.append({
+                    "id": class_id,
+                    "name": name,
+                    "file_id": file_id,
+                    "repository": repository
+                })
         
-        for constraint in constraints:
-            try:
-                self.neo4j_tool.execute_cypher(constraint)
-            except Exception as e:
-                self.logger.error(f"Error creating schema: {e}")
+        # Recurse through children
+        for child in ast_node.get("children", []):
+            if isinstance(child, dict):
+                self._extract_classes(child, ast_format, file_id, repository, results)
+    
+    def _extract_call_sites(self, ast_node: Dict[str, Any], ast_format: str,
+                           file_id: str, repository: str, results: List[Dict[str, Any]]):
+        """Extract call site entities from AST."""
+        # Map entity types for tree-sitter - different languages use different node types
+        if ast_format == "tree-sitter":
+            # Java uses method_invocation and object_creation_expression
+            # Python uses call
+            # JavaScript uses call_expression
+            search_types = ["call", "call_expression", "method_invocation", 
+                          "object_creation_expression", "new_expression"]
+        else:
+            search_types = ["Call"]
+            
+        # Check current node
+        if ast_node.get("type") in search_types:
+            name = self._extract_call_name(ast_node, ast_format)
+            if name:
+                # Use line number for unique ID
+                line = ast_node.get("start", {}).get("row", 0) if ast_format == "tree-sitter" else ast_node.get("lineno", 0)
+                call_id = hashlib.md5(f"{file_id}:{name}:{line}".encode()).hexdigest()
+                results.append({
+                    "id": call_id,
+                    "call_name": name,
+                    "file_id": file_id,
+                    "repository": repository,
+                    "start_line": line
+                })
         
-        self.logger.info("Neo4j schema setup complete")
+        # Recurse through children
+        for child in ast_node.get("children", []):
+            if isinstance(child, dict):
+                self._extract_call_sites(child, ast_format, file_id, repository, results)
+    
+    def _extract_name(self, node: Dict[str, Any], entity_type: str, ast_format: str) -> Optional[str]:
+        """Extract name from a node based on AST format."""
+        if ast_format == "tree-sitter":
+            # For tree-sitter, find the identifier child
+            # Skip certain node types that appear before the actual name
+            skip_types = ["modifiers", "type_identifier", "void_type", "primitive_type", 
+                         "generic_type", "array_type", "scoped_type_identifier"]
+            
+            for child in node.get("children", []):
+                if child.get("type") in skip_types:
+                    continue
+                if child.get("type") == "identifier" and "text" in child:
+                    return child["text"]
+                    
+            # If not found in direct children, do a deeper search
+            # This handles cases where the identifier is nested
+            return self._find_first_identifier(node)
+        else:
+            # For native Python AST
+            return node.get("name")
+        return None
+    
+    def _find_first_identifier(self, node: Dict[str, Any]) -> Optional[str]:
+        """Recursively find the first identifier in a node."""
+        if isinstance(node, dict):
+            if node.get("type") == "identifier" and "text" in node:
+                return node["text"]
+            for child in node.get("children", []):
+                result = self._find_first_identifier(child)
+                if result:
+                    return result
+        return None
+        
+    def _extract_call_name(self, node: Dict[str, Any], ast_format: str) -> Optional[str]:
+        """Extract the function name from a call node."""
+        if ast_format == "tree-sitter":
+            node_type = node.get("type", "")
+            
+            # For Java method_invocation nodes
+            if node_type == "method_invocation":
+                # Structure: object.method(args) or method(args)
+                # Look for the identifier that is the method name
+                for child in node.get("children", []):
+                    if child.get("type") == "identifier" and "text" in child:
+                        return child["text"]
+                    elif child.get("type") == "field_access":
+                        # For chained calls like obj.method()
+                        for subchild in child.get("children", []):
+                            if subchild.get("type") == "identifier" and "text" in subchild:
+                                return subchild["text"]
+            
+            # For Java object_creation_expression (new ClassName())
+            elif node_type == "object_creation_expression":
+                # Look for the type being instantiated
+                for child in node.get("children", []):
+                    if child.get("type") in ["type_identifier", "identifier"] and "text" in child:
+                        return child["text"]
+                    elif child.get("type") == "generic_type":
+                        # Handle generic types like new ArrayList<String>()
+                        for subchild in child.get("children", []):
+                            if subchild.get("type") == "type_identifier" and "text" in subchild:
+                                return subchild["text"]
+            
+            # For other languages (Python, JavaScript)
+            else:
+                for child in node.get("children", []):
+                    if child.get("type") == "identifier" and "text" in child:
+                        return child["text"]
+                    elif child.get("type") in ["attribute", "member_expression"]:
+                        # Handle method calls
+                        for attr_child in child.get("children", []):
+                            if attr_child.get("type") == "identifier" and "text" in attr_child:
+                                return attr_child["text"]
+        else:
+            # For native Python AST
+            func_node = node.get("func", {})
+            if func_node.get("type") == "Name":
+                return func_node.get("id")
+            elif func_node.get("type") == "Attribute":
+                return func_node.get("attr")
+        return None
+        
+    def resolve_placeholders(self) -> Dict[str, int]:
+        """Resolve CallSites to Functions using efficient batch query."""
+        with self.driver.session() as session:
+            result = session.run("""
+                MATCH (cs:CallSite)
+                WHERE NOT EXISTS((cs)-[:RESOLVES_TO]->())
+                WITH cs
+                MATCH (f:Function {name: cs.call_name})
+                WHERE f.repository = cs.repository
+                WITH cs, f, 
+                     CASE WHEN f.file_id = cs.caller_file_id THEN 1.0 ELSE 0.7 END as score
+                ORDER BY cs.id, score DESC
+                WITH cs, collect({func: f, score: score})[0] as best_match
+                WITH cs, best_match.func as target_func, best_match.score as match_score
+                WHERE target_func IS NOT NULL
+                MERGE (cs)-[r:RESOLVES_TO]->(target_func)
+                SET r.score = match_score
+                RETURN count(r) as resolved
+            """)
+            
+            resolved = result.single()["resolved"]
+            self.stats["resolved_calls"] = resolved
+            
+        return {
+            "resolved_calls": resolved,
+            "resolved_imports": 0
+        }
