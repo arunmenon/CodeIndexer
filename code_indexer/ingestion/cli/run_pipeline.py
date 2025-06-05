@@ -251,7 +251,7 @@ def run_git_ingestion(args: argparse.Namespace) -> Dict[str, Any]:
         # Create an empty result structure to avoid None returns
         git_result = {
             "repository_name": repo_name,
-            "repository_url": repo_path_abs,
+            "repository_url": repo_url,  # Use repo_url instead of repo_path_abs
             "files": [],
             "branch": args.branch,
             "commit": args.commit,
