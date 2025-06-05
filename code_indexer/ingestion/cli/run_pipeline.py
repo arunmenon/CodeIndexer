@@ -166,9 +166,29 @@ def run_git_ingestion(args: argparse.Namespace) -> Dict[str, Any]:
     """
     logging.info(f"Starting git ingestion from {args.repo_path}")
     
-    # Get absolute path for local repository
-    repo_path_abs = os.path.abspath(args.repo_path)
-    logging.info(f"Absolute repository path: {repo_path_abs}")
+    # Check if the repository path is a URL or a local path
+    is_remote_url = args.repo_path.startswith(('http://', 'https://', 'git://'))
+    
+    if is_remote_url:
+        # For remote repositories, use the URL directly
+        repo_url = args.repo_path
+        
+        # Extract repo name from the URL
+        if args.repo_path.endswith('/'):
+            repo_path = args.repo_path[:-1]
+        else:
+            repo_path = args.repo_path
+            
+        repo_name = repo_path.split('/')[-1]
+        if repo_name.endswith('.git'):
+            repo_name = repo_name[:-4]
+            
+        logging.info(f"Remote repository URL: {repo_url}")
+    else:
+        # For local repositories, get the absolute path
+        repo_url = os.path.abspath(args.repo_path)
+        repo_name = os.path.basename(repo_url)
+        logging.info(f"Local repository path: {repo_url}")
     
     # Configure git ingestion
     git_config = {
@@ -183,12 +203,10 @@ def run_git_ingestion(args: argparse.Namespace) -> Dict[str, Any]:
     git_runner = DirectGitIngestionRunner(git_config)
     
     # The DirectGitIngestionRunner expects a list of repositories in a specific format
-    repo_name = os.path.basename(repo_path_abs)
-    
     git_input = {
         "repositories": [
             {
-                "url": repo_path_abs,  # Use absolute path
+                "url": repo_url,  # Use URL or absolute path
                 "branch": args.branch,
                 "name": repo_name
             }
@@ -294,12 +312,12 @@ def run_code_parser(args: argparse.Namespace, git_result: Dict[str, Any]) -> Dic
     
     parser_runner = DirectCodeParserRunner(parser_config)
     
-    # Get absolute path for repository
-    repo_path_abs = os.path.abspath(args.repo_path)
+    # Use repository path from git results
+    repo_path = git_result.get("repository_url", "")
     
     parser_input = {
         "repository": git_result.get("repository_name", ""),
-        "repository_path": repo_path_abs,  # Use absolute path
+        "repository_path": repo_path,  # Use the path from git results
         "file_data": file_data,  # Use the file_data from git results
         "url": git_result.get("repository_url", ""),
         "commit": args.commit,
