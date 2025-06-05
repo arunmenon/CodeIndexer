@@ -257,9 +257,35 @@ class TreeSitterParser:
         
         return result
     
+    def detect_language(self, file_path: Union[str, Path]) -> Optional[str]:
+        """
+        Detect language from file extension (public interface).
+        
+        Args:
+            file_path: Path to the file
+            
+        Returns:
+            Language name or None if unknown
+        """
+        # Convert to Path if it's a string
+        path = file_path if isinstance(file_path, Path) else Path(file_path)
+        
+        # Map file extensions to languages
+        extension_map = {
+            ".py": "python",
+            ".js": "javascript",
+            ".jsx": "javascript",
+            ".ts": "typescript",
+            ".tsx": "typescript",
+            ".java": "java"
+        }
+        
+        suffix = path.suffix.lower()
+        return extension_map.get(suffix)
+        
     def _detect_language(self, file_path: Path) -> Optional[str]:
         """
-        Detect language from file extension.
+        Detect language from file extension (internal implementation).
         
         Args:
             file_path: Path to the file
