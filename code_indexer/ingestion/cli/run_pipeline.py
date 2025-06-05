@@ -78,6 +78,12 @@ Advanced Usage:
 
   # Use custom Neo4j connection:
   python -m code_indexer.ingestion.cli.run_pipeline --repo-path ./my_project --neo4j-uri bolt://neo4j-server:7687 --neo4j-user admin --neo4j-password secret
+  
+  # Use SSH authentication for private repositories:
+  python -m code_indexer.ingestion.cli.run_pipeline --repo-path https://github.com/org/private-repo.git --ssh-auth
+
+  # Use SSH authentication with a specific SSH key:
+  python -m code_indexer.ingestion.cli.run_pipeline --repo-path https://github.com/org/private-repo.git --ssh-auth --ssh-key ~/.ssh/id_rsa
         """
     )
     
@@ -107,6 +113,13 @@ Advanced Usage:
                           help='Skip code parsing step (use previous results from output directory)')
     processing.add_argument('--skip-graph', action='store_true',
                           help='Skip graph building step (stop after parsing)')
+    
+    # Git authentication options
+    git_auth = parser.add_argument_group('🔐 Git Authentication')
+    git_auth.add_argument('--ssh-auth', action='store_true',
+                        help='Use SSH authentication for Git operations (required for many private repositories)')
+    git_auth.add_argument('--ssh-key', metavar='KEY_PATH',
+                        help='Path to SSH private key for Git authentication (default: uses SSH agent or CODEINDEXER_SSH_KEY env var)')
     
     # Advanced options
     advanced = parser.add_argument_group('⚙️ Advanced Options')
@@ -197,8 +210,22 @@ def run_git_ingestion(args: argparse.Namespace) -> Dict[str, Any]:
             "*.pyc", "*.pyo", "*.pyd", "*.so", "*.o", "*.a"
         ],
         # Add commit_history_file to ensure we use the same file as previously
-        "commit_history_file": "commit_history.json"
+        "commit_history_file": "commit_history.json",
+        "git_tool_config": {
+            # Pass SSH authentication settings if enabled
+            "use_ssh": args.ssh_auth,
+            "ssh_key_path": args.ssh_key if args.ssh_auth else None,
+            "workspace_dir": "./workspace"
+        }
     }
+    
+    # Log SSH authentication status
+    if args.ssh_auth:
+        logging.info("SSH authentication enabled for Git operations")
+        if args.ssh_key:
+            logging.info(f"Using custom SSH key: {args.ssh_key}")
+        else:
+            logging.info("Using default SSH key or SSH agent")
     
     git_runner = DirectGitIngestionRunner(git_config)
     
@@ -710,6 +737,13 @@ def main() -> None:
     print(f"📂 Output Directory: {args.output_dir}")
     print(f"🔖 Branch: {args.branch}")
     print(f"🔒 Commit: {args.commit}")
+    
+    # Display authentication mode
+    if args.ssh_auth:
+        ssh_key_info = f" (using key: {args.ssh_key})" if args.ssh_key else " (using default key or SSH agent)"
+        print(f"🔐 Authentication: SSH{ssh_key_info}")
+    else:
+        print("🔐 Authentication: Default (no SSH)")
     
     if args.full_indexing:
         print("⚠️  Full indexing mode: Existing data will be cleared")

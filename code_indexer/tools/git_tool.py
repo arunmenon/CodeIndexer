@@ -44,6 +44,25 @@ class GitTool:
         ]))
         self.max_file_size = config.get("max_file_size", 1024 * 1024)  # 1MB
         
+        # SSH Authentication settings
+        self.use_ssh = config.get("use_ssh", False)
+        self.ssh_key_path = config.get("ssh_key_path") or os.environ.get("CODEINDEXER_SSH_KEY")
+        
+        # Configure SSH environment if using SSH authentication
+        if self.use_ssh:
+            # Build SSH command based on available key information
+            ssh_command = 'ssh -o StrictHostKeyChecking=no'
+            
+            if self.ssh_key_path:
+                if os.path.exists(self.ssh_key_path):
+                    ssh_command += f' -i {self.ssh_key_path}'
+                    self.logger.info(f"Using custom SSH key: {self.ssh_key_path}")
+                else:
+                    self.logger.warning(f"Specified SSH key does not exist: {self.ssh_key_path}")
+            
+            os.environ['GIT_SSH_COMMAND'] = ssh_command
+            self.logger.info("SSH authentication enabled for Git operations")
+        
         # Ensure workspace directory exists
         os.makedirs(self.workspace_dir, exist_ok=True)
     
@@ -65,6 +84,23 @@ class GitTool:
             if not repo_dir:
                 repo_name = repo_url.split("/")[-1].replace(".git", "")
                 repo_dir = os.path.join(self.workspace_dir, repo_name)
+            
+            # Convert HTTPS URL to SSH URL if SSH authentication is enabled
+            original_url = repo_url
+            if self.use_ssh and repo_url.startswith(('http://', 'https://')):
+                # Extract domain and path from HTTPS URL
+                url_parts = repo_url.replace('http://', '').replace('https://', '').split('/', 1)
+                if len(url_parts) == 2:
+                    domain = url_parts[0]
+                    path = url_parts[1]
+                    
+                    # Remove .git suffix if present for consistency
+                    if path.endswith('.git'):
+                        path = path[:-4]
+                    
+                    # Transform to SSH format: git@domain:path.git
+                    repo_url = f"git@{domain}:{path}.git"
+                    self.logger.info(f"Using SSH authentication, converted URL from {original_url} to: {repo_url}")
             
             self.logger.info(f"Repository dir: {repo_dir}")
             
@@ -106,6 +142,22 @@ class GitTool:
             self.logger.info(f"Repository cloned successfully to {repo_dir}")
             return True, repo_dir
             
+        except git.exc.GitCommandError as e:
+            # Provide more helpful error messages for authentication issues
+            error_msg = str(e)
+            if "Permission denied (publickey)" in error_msg:
+                self.logger.error("SSH authentication failed: Permission denied. Ensure your SSH key is properly set up and added to your SSH agent.")
+            elif "The requested URL returned error: 403" in error_msg:
+                if self.use_ssh:
+                    self.logger.error("Authentication failed despite SSH being enabled. Check if the SSH URL conversion is correct and your SSH key has access to this repository.")
+                else:
+                    self.logger.error("Authentication failed: Repository requires authentication. Try using --ssh-auth flag or providing credentials.")
+            else:
+                self.logger.error(f"Failed to clone repository: {e}")
+            
+            import traceback
+            self.logger.error(traceback.format_exc())
+            return False, ""
         except Exception as e:
             self.logger.error(f"Failed to clone repository: {e}")
             import traceback
