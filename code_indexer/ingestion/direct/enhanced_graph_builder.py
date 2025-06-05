@@ -1187,8 +1187,8 @@ class EnhancedGraphBuilderRunner(DirectGraphBuilderRunner):
             WITH cs, f, 
                  CASE WHEN f.file_id = cs.caller_file_id THEN 1.0 ELSE 0.7 END as score
             ORDER BY cs.id, score DESC
-            WITH cs, collect({f: f, score: score})[0] as best_match
-            WITH cs, best_match.f as target_func, best_match.score as match_score
+            WITH cs, collect({{func: f, score: score}})[0] as best_match
+            WITH cs, best_match.func as target_func, best_match.score as match_score
             MERGE (cs)-[r:RESOLVES_TO]->(target_func)
             SET r.score = match_score, r.timestamp = timestamp()
             RETURN count(r) as resolved_calls
