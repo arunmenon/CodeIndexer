@@ -23,7 +23,7 @@ from pathlib import Path
 # Import the direct implementations
 from code_indexer.ingestion.direct.git_ingestion import DirectGitIngestionRunner
 from code_indexer.ingestion.direct.code_parser import DirectCodeParserRunner
-from code_indexer.ingestion.direct.enhanced_graph_builder import EnhancedGraphBuilderRunner
+from code_indexer.ingestion.stages.graph import process_graph_building
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -371,7 +371,7 @@ def run_code_parser(args: argparse.Namespace, git_result: Dict[str, Any]) -> Dic
 
 def run_graph_builder(args: argparse.Namespace, parser_result: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Run the enhanced graph builder step.
+    Run the SIMPLE graph builder step.
     
     Args:
         args: Command line arguments
@@ -380,7 +380,7 @@ def run_graph_builder(args: argparse.Namespace, parser_result: Dict[str, Any]) -
     Returns:
         Dictionary with graph building results
     """
-    logging.info("Starting enhanced graph building with placeholder pattern")
+    logging.info("Starting SIMPLE graph building")
     
     # Get ASTs from parser results
     asts = parser_result.get("asts", [])
@@ -411,101 +411,48 @@ def run_graph_builder(args: argparse.Namespace, parser_result: Dict[str, Any]) -
             
         return empty_result
     
-    # Configure enhanced graph builder
-    graph_config = {
-        "neo4j_config": {
-            "NEO4J_URI": args.neo4j_uri,
-            "NEO4J_USER": args.neo4j_user,
-            "NEO4J_PASSWORD": args.neo4j_password
-        },
-        "create_placeholders": True,
-        "immediate_resolution": args.immediate_resolution,
-        "resolution_strategy": args.resolution_strategy,
-        "use_inheritance": True,
-        "detect_calls": True,
-        "use_imports": True
+    # Use the OPTIMIZED graph builder with larger batch size
+    neo4j_config = {
+        "uri": args.neo4j_uri,
+        "user": args.neo4j_user,
+        "password": args.neo4j_password,
+        "batch_size": 1000  # Process 1000 files per batch
     }
     
-    # Validate Neo4j connection before proceeding
+    # Save parser output for the simple graph builder
+    parser_output_file = os.path.join(args.output_dir, "parser_output.json")
+    graph_output_file = os.path.join(args.output_dir, "graph_output.json")
+    
+    # The simple graph builder expects the parser result with ASTs
+    parser_result["is_full_indexing"] = args.full_indexing
+    
+    # Run the simple graph builder
     try:
-        from neo4j import GraphDatabase
-        driver = GraphDatabase.driver(
-            args.neo4j_uri, 
-            auth=(args.neo4j_user, args.neo4j_password)
+        graph_result = process_graph_building(
+            input_file=parser_output_file,
+            output_file=graph_output_file,
+            neo4j_config=neo4j_config
         )
-        # Test the connection
-        with driver.session() as session:
-            result = session.run("RETURN 1")
-            result.single()
-        driver.close()
-        logging.info("Neo4j connection successful")
-    except Exception as e:
-        logging.error(f"Failed to connect to Neo4j: {e}")
-        # Return an error result
-        error_result = {
-            "repository": parser_result.get("repository", ""),
-            "repository_url": parser_result.get("repository_url", ""),
-            "files_processed": 0,
-            "files_failed": 0,
-            "errors": [f"Neo4j connection failed: {str(e)}"],
-            "graph_stats": {
-                "nodes_created": 0,
-                "relationships_created": 0,
-                "call_sites": 0,
-                "resolved_calls": 0,
-                "imported_modules": 0
-            }
-        }
         
-        # Save the error result
-        output_file = os.path.join(args.output_dir, "graph_output.json")
-        with open(output_file, 'w') as f:
-            json.dump(error_result, f, indent=2)
-            
-        return error_result
-    
-    # Create graph builder instance
-    graph_runner = EnhancedGraphBuilderRunner(graph_config)
-    
-    # Prepare input for graph builder
-    graph_input = {
-        "repository": parser_result.get("repository", ""),
-        "repository_url": parser_result.get("repository_url", ""),
-        "commit": args.commit,
-        "branch": args.branch,
-        "asts": asts,
-        "is_full_indexing": parser_result.get("is_full_indexing", args.full_indexing)
-    }
-    
-    logging.info(f"Running graph builder with {len(asts)} ASTs")
-    
-    try:
-        graph_result = graph_runner.run(graph_input)
-        
-        # Save output
-        output_file = os.path.join(args.output_dir, "graph_output.json")
-        with open(output_file, 'w') as f:
-            json.dump(graph_result, f, indent=2)
-        
-        # Log detailed results
-        logging.info(f"Graph building complete, processed {graph_result.get('files_processed', 0)} files")
-        logging.info(f"Created {graph_result.get('graph_stats', {}).get('call_sites', 0)} call sites")
-        logging.info(f"Resolved {graph_result.get('graph_stats', {}).get('resolved_calls', 0)} function calls")
-        logging.info(f"Imported {graph_result.get('graph_stats', {}).get('imported_modules', 0)} modules")
+        # Log results
+        stats = graph_result.get("graph_stats", {})
+        logging.info(f"Graph building complete: {stats}")
+        logging.info(f"Created {stats.get('functions', 0)} functions")
+        logging.info(f"Created {stats.get('classes', 0)} classes") 
+        logging.info(f"Created {stats.get('call_sites', 0)} call sites")
+        logging.info(f"Resolved {stats.get('resolved_calls', 0)} function calls")
         
         return graph_result
     except Exception as e:
         logging.error(f"Graph building failed: {e}", exc_info=True)
-        # Return an error result
         error_result = {
             "repository": parser_result.get("repository", ""),
-            "repository_url": parser_result.get("repository_url", ""),
             "files_processed": 0,
             "files_failed": len(asts),
-            "errors": [f"Graph building failed: {str(e)}"],
+            "error": str(e),
             "graph_stats": {
-                "nodes_created": 0,
-                "relationships_created": 0,
+                "functions": 0,
+                "classes": 0,
                 "call_sites": 0,
                 "resolved_calls": 0,
                 "imported_modules": 0
