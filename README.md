@@ -26,8 +26,11 @@ cd CodeIndexer
 # Install dependencies
 pip install -e .
 
-# Process a repository
-python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/repo
+# Process a local repository
+python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/local/repo --output-dir ./output
+
+# Or process a remote repository (GitHub, GitLab, etc.)
+python -m code_indexer.ingestion.cli.run_pipeline --repo-path https://github.com/username/repo.git --output-dir ./output
 ```
 
 ## Architecture
@@ -72,23 +75,61 @@ For a detailed breakdown of each module, see the [Codebase Structure Documentati
 ### Basic Commands
 
 ```bash
-# Run full pipeline
-python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/repo
+# Index a local repository
+python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/local/repo --output-dir ./output
 
-# Force full reindexing
-python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/repo --full-indexing
+# Index a remote repository (GitHub, GitLab, etc.)
+python -m code_indexer.ingestion.cli.run_pipeline --repo-path https://github.com/username/repo.git --output-dir ./output
 
-# Skip specific stages
-python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/repo --skip-git --skip-parse
+# Specify branch (default is 'main')
+python -m code_indexer.ingestion.cli.run_pipeline --repo-path https://github.com/username/repo.git --branch develop --output-dir ./output
+
+# Force full reindexing (instead of incremental)
+python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/repo --full-indexing --output-dir ./output
+
+# Enable verbose logging
+python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/repo --verbose --output-dir ./output
+```
+
+### Selective Processing
+
+```bash
+# Skip Git ingestion (use previously ingested files)
+python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/repo --skip-git --output-dir ./output
+
+# Skip code parsing (use previously parsed ASTs)
+python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/repo --skip-parse --output-dir ./output
+
+# Only run Git ingestion and parsing (skip graph building)
+python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/repo --skip-graph --output-dir ./output
 ```
 
 ### Advanced Configuration
 
 ```bash
 # Configure resolution strategy based on codebase size
-python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/repo --resolution-strategy join  # Default, for repos with <2M definitions
-python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/repo --resolution-strategy hashmap  # For repos with 2-5M definitions
-python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/repo --resolution-strategy sharded  # For massive repos >5M definitions
+python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/repo --resolution-strategy join --output-dir ./output  # Default, for repos with <2M definitions
+python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/repo --resolution-strategy hashmap --output-dir ./output  # For repos with 2-5M definitions
+python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/repo --resolution-strategy sharded --output-dir ./output  # For massive repos >5M definitions
+
+# Configure Neo4j connection
+python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/repo --neo4j-uri bolt://localhost:7687 --neo4j-user neo4j --neo4j-password password --output-dir ./output
+
+# Configure placeholder resolution
+python -m code_indexer.ingestion.cli.run_pipeline --repo-path /path/to/repo --immediate-resolution --output-dir ./output
+```
+
+### Real-World Examples
+
+```bash
+# Index the FastAPI project
+python -m code_indexer.ingestion.cli.run_pipeline --repo-path https://github.com/tiangolo/fastapi.git --output-dir ./fastapi_output
+
+# Analyze local Python project with verbose output
+python -m code_indexer.ingestion.cli.run_pipeline --repo-path ./my_python_project --verbose --output-dir ./my_project_output
+
+# Full indexing of a large JavaScript project with hashmap resolution
+python -m code_indexer.ingestion.cli.run_pipeline --repo-path https://github.com/organization/large-js-project.git --full-indexing --resolution-strategy hashmap --output-dir ./js_project_output
 ```
 
 ## Documentation
