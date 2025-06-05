@@ -99,13 +99,34 @@ def test_function_extraction():
             # Extract functions
             functions = []
             for func_node in get_functions(iterator):
-                # Find function name
+                # Find function name based on node type and language
                 name = ""
+                node_type = func_node.get("type", "")
+                
+                # Handle different language-specific node structures
                 if "children" in func_node:
+                    # Standard case - identifier child node
                     for child in func_node["children"]:
                         if child.get("type") == "identifier":
                             name = child.get("text", "")
                             break
+                    
+                    # JavaScript arrow function - look for parent assignment
+                    if not name and node_type == "arrow_function":
+                        # Look for variable declaration with assignment
+                        for parent_node in iterator:
+                            if parent_node.get("type") == "variable_declarator" and "children" in parent_node:
+                                for child in parent_node["children"]:
+                                    if child.get("type") == "identifier":
+                                        name = f"{child.get('text', '')}(arrow)"
+                                        break
+                    
+                    # JavaScript method definition - name is often in property_identifier
+                    if not name and node_type in ["method_definition", "method"]:
+                        for child in func_node["children"]:
+                            if child.get("type") == "property_identifier":
+                                name = child.get("text", "")
+                                break
                 
                 functions.append({
                     "type": func_node["type"],
