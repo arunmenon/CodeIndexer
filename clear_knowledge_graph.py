@@ -140,10 +140,37 @@ def clear_database(uri: str, user: str, password: str,
                 """
             else:
                 # Delete everything including schema
+                # First get all constraints and indexes to drop them manually
+                # This approach works without APOC
+                with driver.session(database=database) as schema_session:
+                    # Drop constraints
+                    constraints_query = "SHOW CONSTRAINTS"
+                    try:
+                        constraints = list(schema_session.run(constraints_query))
+                        for constraint in constraints:
+                            name = constraint.get('name')
+                            if name:
+                                logging.info(f"Dropping constraint: {name}")
+                                drop_query = f"DROP CONSTRAINT {name}"
+                                schema_session.run(drop_query)
+                    except Exception as e:
+                        logging.warning(f"Error dropping constraints: {e}")
+                    
+                    # Drop indexes
+                    indexes_query = "SHOW INDEXES"
+                    try:
+                        indexes = list(schema_session.run(indexes_query))
+                        for index in indexes:
+                            name = index.get('name')
+                            if name:
+                                logging.info(f"Dropping index: {name}")
+                                drop_query = f"DROP INDEX {name}"
+                                schema_session.run(drop_query)
+                    except Exception as e:
+                        logging.warning(f"Error dropping indexes: {e}")
+                
+                # Then delete all data
                 query = """
-                // First delete all constraints and indexes
-                CALL apoc.schema.assert({}, {})
-                // Then delete all data
                 MATCH (n)
                 DETACH DELETE n
                 RETURN count(*) as deleted_count
